@@ -219,8 +219,12 @@ export async function PUT(req: NextRequest) {
       });
     } catch (upsertErr: any) {
       console.warn("MasterProfile upsert warning:", upsertErr?.message);
-      if (upsertErr?.message?.includes("achievementsJson")) {
-        delete dataPayload.achievementsJson;
+      if (
+        upsertErr?.message?.includes("achievementsJson") ||
+        upsertErr?.message?.includes("registrationNumber")
+      ) {
+        if (upsertErr?.message?.includes("achievementsJson")) delete dataPayload.achievementsJson;
+        if (upsertErr?.message?.includes("registrationNumber")) delete dataPayload.registrationNumber;
         updatedProfile = await prisma.masterProfile.upsert({
           where: { userId: user.id },
           update: dataPayload,
