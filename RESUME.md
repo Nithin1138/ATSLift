@@ -163,7 +163,7 @@ flowchart TD
 - [x] **Strict TypeScript Typing:** No implicit `any` in core pipelines.
 - [x] **Multi-Format Attachment Parsing:** Robust in-memory ingestion for XLSX, CSV, PDF, and Google Sheets.
 - [x] **Context-Adaptive Notifications:** 6 specialized recruitment templates (OA, GD, Interview, Pool Drive, Walk-in, Offer).
-- [x] **Comprehensive Test Suite:** 57 passing tests across 18 suites verifying critical paths, parsers, and security.
+- [x] **Comprehensive Test Suite:** 59 passing tests across 19 suites verifying critical paths, parsers, and security.
 - [x] **Database Indexing:** Indexed `userId` on `MasterProfile`, `JobPosting`, and `AtsScoreCheck` for sub-10ms queries.
 - [x] **Graceful Error Recovery:** Fallback UI states for missing data, rate limits, and network errors.
 - [x] **Clean Separations of Concerns:** Utility functions (`lib/`), UI Client components (`app/`), and Server API routes (`app/api/`) cleanly decoupled.

@@ -13,7 +13,7 @@ Explore the architectural, operational, and development documentation below:
 | **[architecture.md](architecture.md)** | High-level system architecture, cloud topology, component boundaries, and technology stack breakdown. | System Architects, Tech Leads, Interviewers |
 | **[system-design.md](system-design.md)** | Deep-dive into data models, parallel AI pipelines, state machines, async queues, and database lifecycle. | Senior Engineers, Backend Developers |
 | **[benchmarks.md](benchmarks.md)** | Stress test reports, concurrency benchmarks, database wire payload reductions, and latency metrics. | DevOps, SREs, Performance Engineers |
-| **[testing-strategy.md](testing-strategy.md)** | Test runner architecture, test suites (20 tests), HMAC cryptographic validation, and mock modes. | QA Engineers, Contributors |
+| **[testing-strategy.md](testing-strategy.md)** | Test runner architecture, 19 test suites (59 tests), HMAC cryptographic validation, and mock modes. | QA Engineers, Contributors |
 | **[demo-guide.md](demo-guide.md)** | End-to-end walkthrough script for live demos, recruiter screens, and technical interviews. | Recruiters, Interviewers, Evaluators |
 | **[api-reference.md](api-reference.md)** | OpenAPI-style specification for core endpoints, payloads, query parameters, and error status codes. | Frontend/Backend Developers, Integrators |
 | **[security-and-compliance.md](security-and-compliance.md)** | HMAC webhook verification, sliding window rate limiting, daily quotas, and secret management. | Security Auditors, Compliance Teams |

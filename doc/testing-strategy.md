@@ -9,17 +9,17 @@ npm test  # Executes tsx --test tests/**/*.test.ts in ~180ms
 ```
 
 ### Why Native Node.js Test Runner?
-- **Speed**: Executes all 20 tests across 5 suites in **under 200ms**.
+- **Speed**: Executes all 59 tests across 19 suites in **~1.2s**.
 - **Zero Config**: No `jest.config.js`, `babel.config.js`, or complex transform configurations required.
 - **Native TypeScript Support**: Seamless TypeScript execution powered by `tsx` (esbuild).
 - **Long-Term Maintainability**: Relies on Node.js core APIs that never suffer from breaking third-party package deprecations.
 
 ---
 
-## 2. Test Suite Breakdown (57 Tests across 18 Suites)
+## 2. Test Suite Breakdown (59 Tests across 19 Suites)
 
 ```mermaid
-pie title ATSLift Automated Test Distribution (57 Tests)
+pie title ATSLift Automated Test Distribution (59 Tests)
     "Integration & Security (apiFlow.test.ts)" : 5
     "Critical Path E2E (criticalPath.test.ts)" : 4
     "ATS Normalization (atsFormatting.test.ts)" : 5
@@ -28,7 +28,7 @@ pie title ATSLift Automated Test Distribution (57 Tests)
     "Eligibility Engine (eligibilityChecker.test.ts)" : 3
     "Mobile Routing Integrity (navigation.test.ts)" : 3
     "PII Redaction & Sanitization (pii.test.ts)" : 12
-    "Attachment Parser & Shortlist (attachmentParser.test.ts)" : 13
+    "Attachment Parser & Shortlist (attachmentParser.test.ts)" : 15
 ```
 
 ### Critical Path Suite: End-to-End User Workflows (`tests/integration/criticalPath.test.ts`)
@@ -103,6 +103,8 @@ pie title ATSLift Automated Test Distribution (57 Tests)
 | `Body Word-Boundary Regex` | Asserts boundary matching (`\b7Y6T8\b`) and suppresses partial substring false positives. |
 | `Universal Attachment Processor` | Converts base64 payloads, Blob streams, and download URLs transparently. |
 | `Adaptive Event Classification` | Classifies events into OA, GD, Interview, Pool Drive, Walk-in, and Final Offer with tailored advice. |
+| `Numeric Cell Safeguards` | Ensures numeric cell values (room numbers, batches, sl nos) never throw `TypeError: val.trim is not a function`. |
+| `PDF Attachment Parser` | Safely parses PDF buffers with class-based loaders and uncompressed stream fallbacks. |
 ----
 
 ## 3. Running the Test Suite

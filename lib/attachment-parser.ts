@@ -257,7 +257,17 @@ export async function processAttachmentItem(
   } else if (Buffer.isBuffer(att.content)) {
     buffer = att.content;
   } else if (typeof att.content === "string") {
-    buffer = Buffer.from(att.content, "base64");
+    try {
+      buffer = Buffer.from(att.content, "base64");
+    } catch {
+      buffer = Buffer.from(att.content, "utf-8");
+    }
+  } else if (Array.isArray(att.bytes)) {
+    buffer = Buffer.from(att.bytes);
+  } else if (Array.isArray(att.data)) {
+    buffer = Buffer.from(att.data);
+  } else if (Array.isArray(att.content)) {
+    buffer = Buffer.from(att.content);
   } else if (att instanceof Blob || typeof att.arrayBuffer === "function") {
     const ab = await att.arrayBuffer();
     buffer = Buffer.from(ab);
@@ -273,21 +283,56 @@ export async function processAttachmentItem(
     }
   }
 
-  if (!buffer) return null;
+  if (!buffer || buffer.length === 0) return null;
 
-  if (filenameLower.endsWith(".xlsx") || filenameLower.endsWith(".xls")) {
-    return parseXlsxBuffer(buffer, regNumber, filename);
+  const mimeType = String(att.contentType || att.mimeType || att.type || "").toLowerCase();
+
+  // 1. Excel (XLSX / XLS) by extension, MIME type, or PK zip signature
+  if (
+    filenameLower.endsWith(".xlsx") ||
+    filenameLower.endsWith(".xls") ||
+    mimeType.includes("spreadsheet") ||
+    mimeType.includes("excel") ||
+    (buffer.length > 4 && buffer[0] === 0x50 && buffer[1] === 0x4b)
+  ) {
+    const res = parseXlsxBuffer(buffer, regNumber, filename);
+    if (res && res.found) return res;
   }
 
-  if (filenameLower.endsWith(".csv")) {
+  // 2. PDF by extension, MIME type, or %PDF- header
+  if (
+    filenameLower.endsWith(".pdf") ||
+    mimeType.includes("pdf") ||
+    (buffer.length > 4 && buffer.slice(0, 5).toString() === "%PDF-")
+  ) {
+    const res = await parsePdfBuffer(buffer, regNumber, filename);
+    if (res && res.found) return res;
+  }
+
+  // 3. CSV by extension or text inspection
+  if (filenameLower.endsWith(".csv") || mimeType.includes("csv")) {
     const text = buffer.toString("utf-8");
     const res = parseCsvText(text, regNumber);
-    if (res) res.source = filename;
-    return res;
+    if (res) return { ...res, source: filename };
   }
 
-  if (filenameLower.endsWith(".pdf")) {
-    return await parsePdfBuffer(buffer, regNumber, filename);
+  // 4. Universal plain text fallback search
+  try {
+    const text = buffer.toString("utf-8");
+    const csvRes = parseCsvText(text, regNumber);
+    if (csvRes && csvRes.found) return { ...csvRes, source: filename };
+
+    const search = searchRegNumberInText(text, regNumber);
+    if (search.found) {
+      return {
+        found: true,
+        source: filename,
+        row: null,
+        contextSummary: search.contextLine,
+      };
+    }
+  } catch {
+    // Ignore encoding errors
   }
 
   return null;

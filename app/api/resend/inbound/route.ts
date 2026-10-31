@@ -119,6 +119,27 @@ export async function POST(req: Request) {
       }
     }
 
+    // 2.5. Try matching sender email (if user forwarded from their Google Sheet or personal Gmail)
+    if (!matchedTgUser && from) {
+      const cleanFrom = extractCleanEmail(from);
+      if (cleanFrom) {
+        const userByEmail = await prisma.telegramUser.findFirst({
+          where: {
+            user: {
+              email: {
+                equals: cleanFrom,
+                mode: "insensitive",
+              },
+            },
+          },
+        });
+        if (userByEmail) {
+          console.log(`[Resend Inbound]: Matched Telegram user via sender email: ${maskEmail(cleanFrom)}`);
+          matchedTgUser = userByEmail;
+        }
+      }
+    }
+
     // 3. Fallback: If only 1 Telegram user is linked in DB or default single user, match recent TelegramUser
     if (!matchedTgUser) {
       const firstUser = await prisma.telegramUser.findFirst({
