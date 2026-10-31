@@ -171,3 +171,5 @@ flowchart TD
 
 ---
 *Created for ResumeForge / Campus Placement Automation System.*
+
+![alt text](image.png)
