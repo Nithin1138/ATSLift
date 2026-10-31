@@ -292,9 +292,11 @@ export function generateHeuristicAtsFallback(profile: any, jobPosting?: any): At
 export async function runAtsScoreCheck(params: {
   userId: string;
   jobPostingId?: string;
+  jobPostingText?: string;
+  preloadedMasterProfile?: any;
   triggeredBy?: "manual" | "auto_notification";
 }): Promise<AtsCheckResult> {
-  const { userId, jobPostingId, triggeredBy = "manual" } = params;
+  const { userId, jobPostingId, jobPostingText: customJdText, preloadedMasterProfile, triggeredBy = "manual" } = params;
 
   // 1. Enforce Rate Limit
   const dailyCount = await getDailyAtsCheckCount(userId);
@@ -302,8 +304,8 @@ export async function runAtsScoreCheck(params: {
     throw new Error(`Daily ATS check limit reached (${DAILY_ATS_CHECK_LIMIT}/${DAILY_ATS_CHECK_LIMIT} per day). Please try again tomorrow!`);
   }
 
-  // 2. Fetch MasterProfile (or fallback auto-populate)
-  let masterProfile = await prisma.masterProfile.findUnique({
+  // 2. Fetch MasterProfile (or use preloaded profile to eliminate DB roundtrip)
+  let masterProfile = preloadedMasterProfile || await prisma.masterProfile.findUnique({
     where: { userId },
   });
 
@@ -348,10 +350,10 @@ export async function runAtsScoreCheck(params: {
     }
   }
 
-  // 3. Fetch JobPosting if specified
+  // 3. Fetch JobPosting if specified or use preloaded text
   let jobPosting: any = null;
-  let jobPostingText = "";
-  if (jobPostingId) {
+  let jobPostingText = customJdText || "";
+  if (!jobPostingText && jobPostingId) {
     jobPosting = await prisma.jobPosting.findUnique({
       where: { id: jobPostingId },
     });

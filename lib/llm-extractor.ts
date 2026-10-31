@@ -196,39 +196,11 @@ Return ONLY valid JSON.
 
   let extractedObj: any = null;
 
-  // 1. Try Gemini 1.5 Flash API
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (geminiKey) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: "application/json",
-          },
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const rawJsonStr = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (rawJsonStr) {
-          extractedObj = JSON.parse(rawJsonStr);
-        }
-      }
-    } catch (err) {
-      console.warn("[LLM Extraction - Gemini Error]:", err);
-    }
-  }
-
-  // 2. Fallback to Groq API if configured
-  if (!extractedObj) {
-    const groqKey = process.env.GROQ_API_KEY;
-    if (groqKey) {
+  // 1. Try Groq LPU API first for ultra-fast (sub-second ~300ms) structured extraction
+  const groqKey = process.env.GROQ_API_KEY;
+  if (groqKey) {
+    const groqModels = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+    for (const model of groqModels) {
       try {
         const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
@@ -237,11 +209,12 @@ Return ONLY valid JSON.
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model: "llama-3.3-70b-versatile",
+            model,
             messages: [{ role: "user", content: prompt }],
             response_format: { type: "json_object" },
             temperature: 0.1,
           }),
+          signal: AbortSignal.timeout(3500),
         });
 
         if (res.ok) {
@@ -249,10 +222,43 @@ Return ONLY valid JSON.
           const rawJsonStr = data.choices?.[0]?.message?.content;
           if (rawJsonStr) {
             extractedObj = JSON.parse(rawJsonStr);
+            if (extractedObj && extractedObj.companyName) break;
           }
         }
       } catch (err) {
-        console.warn("[LLM Extraction - Groq Error]:", err);
+        // Continue to next model or fallback
+      }
+    }
+  }
+
+  // 2. Fallback to Gemini API if Groq was unavailable or failed
+  if (!extractedObj) {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: "application/json",
+            },
+          }),
+          signal: AbortSignal.timeout(6000),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const rawJsonStr = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (rawJsonStr) {
+            extractedObj = JSON.parse(rawJsonStr);
+          }
+        }
+      } catch (err) {
+        console.warn("[LLM Extraction - Gemini Error]:", err);
       }
     }
   }

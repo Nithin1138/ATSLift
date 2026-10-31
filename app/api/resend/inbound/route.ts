@@ -256,12 +256,13 @@ export async function POST(req: Request) {
     // ── ATTACHMENT PARSING + REG NUMBER SHORTLIST DETECTION ──────────────────
     let userRegNumber = "";
     let isAtsEnabled = false;
+    let fullUser: any = null;
 
     if (matchedTgUser.userId) {
       try {
-        const fullUser = await prisma.user.findUnique({
+        fullUser = await prisma.user.findUnique({
           where: { id: matchedTgUser.userId },
-          include: { masterProfile: true },
+          include: { masterProfile: true, resumes: { take: 1, orderBy: { createdAt: "desc" } } },
         });
         userRegNumber = (fullUser?.masterProfile as any)?.registrationNumber?.trim() || "";
         isAtsEnabled = fullUser?.masterProfile?.atsCheckEnabled ?? false;
@@ -348,9 +349,33 @@ export async function POST(req: Request) {
       }
     }
 
-    // ── LLM EXTRACTION ───────────────────────────────────────────────────────
-    // Call LLM Extractor with both text & HTML
-    const extracted = await extractJdInfoWithLLM(fullTextContext, rawHtmlText);
+    // ── HIGH-SPEED 3-WAY PARALLEL PIPELINE ─────────────────────────────────
+    // 1. If Shortlist Match is confirmed, we bypass heavy LLM eligibility checking & scoring entirely!
+    // 2. If New Drive Announcement, we run JD extraction, eligibility verification, and ATS scoring
+    //    ALL IN PARALLEL via Promise.allSettled with preloaded user data (0 redundant DB queries).
+    const isShortlistFound = !!(shortlistMatch && shortlistMatch.found);
+
+    const [extractSettled, eligSettled, atsSettled] = await Promise.allSettled([
+      extractJdInfoWithLLM(fullTextContext, rawHtmlText),
+      (!isShortlistFound && isAtsEnabled)
+        ? evaluateUserEligibility({
+            userId: matchedTgUser.userId,
+            rawEmailText: fullTextContext,
+            eligibilityCriteriaText: "",
+            preloadedUser: fullUser,
+          })
+        : Promise.resolve(null),
+      (!isShortlistFound && isAtsEnabled)
+        ? runAtsScoreCheck({
+            userId: matchedTgUser.userId,
+            jobPostingText: fullTextContext,
+            preloadedMasterProfile: fullUser?.masterProfile,
+            triggeredBy: "auto_notification",
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const extracted = extractSettled.status === "fulfilled" ? extractSettled.value : null;
 
     const companyName = (extracted && extracted.companyName && extracted.companyName !== "Placement Drive")
       ? extracted.companyName
@@ -379,7 +404,62 @@ export async function POST(req: Request) {
       ? JSON.stringify(extracted.otherImportantDates)
       : null;
 
-    // Create JobPosting record in database
+    // Process parallel eligibility results
+    let eligCheckResult = "uncertain";
+    let eligReason = "";
+    let unmetCriteriaJson = "[]";
+    let matchedCriteriaSummary = "";
+    let atsScoreSection = "";
+    let atsEdgeCaseNotice = "";
+
+    if (eligSettled.status === "fulfilled" && eligSettled.value) {
+      const evalRes = eligSettled.value;
+      eligCheckResult = evalRes.result;
+      eligReason = evalRes.reason;
+      unmetCriteriaJson = JSON.stringify(evalRes.unmetCriteria || []);
+      matchedCriteriaSummary = evalRes.matchedCriteriaSummary || "";
+    }
+
+    // Process parallel ATS scoring results
+    if (atsSettled.status === "fulfilled" && atsSettled.value) {
+      const scoreResult = atsSettled.value;
+      if (scoreResult && typeof scoreResult.overallScore === "number") {
+        const scoreTier =
+          scoreResult.overallScore >= 80
+            ? "Strong Match"
+            : scoreResult.overallScore >= 60
+              ? "Moderate Match"
+              : "Needs Improvement";
+
+        atsScoreSection += `\n\n🎯 <b>ATS Match Score: ${scoreResult.overallScore}% (${scoreTier})</b>`;
+
+        const topGaps: string[] = [];
+        if (Array.isArray(scoreResult.keywordGaps) && scoreResult.keywordGaps.length > 0) {
+          topGaps.push(...scoreResult.keywordGaps.slice(0, 3));
+        }
+        if (topGaps.length < 3 && Array.isArray(scoreResult.improvements)) {
+          for (const imp of scoreResult.improvements) {
+            if (topGaps.length >= 3) break;
+            const text = typeof imp === "string" ? imp : (imp?.suggestion || "");
+            if (text && !topGaps.includes(text)) topGaps.push(text);
+          }
+        }
+        if (topGaps.length > 0) {
+          const safeGaps = topGaps.map((g) => escapeHtml(g.replace(/^\[.*?\]\s*/, ""))).join(", ");
+          atsScoreSection += `\n⚡ <b>Top Improvements:</b> ${safeGaps}`;
+        }
+      }
+    } else if (atsSettled.status === "rejected") {
+      const atsErr = atsSettled.reason;
+      console.warn("[Inbound ATS Score Auto-check error]:", atsErr?.message || atsErr);
+      if (atsErr?.message === "NO_RESUME_FOUND") {
+        atsEdgeCaseNotice = `\n\nℹ️ <i>Add a resume to My Space to see inline ATS match scores & gap analysis on new drive alerts.</i>`;
+      } else if (atsErr?.message?.includes("limit reached")) {
+        atsEdgeCaseNotice = `\n\nℹ️ <i>Daily automated ATS scoring limit reached (10/10 checks today). Use "Check ATS Readiness" inside the app to score this drive manually.</i>`;
+      }
+    }
+
+    // Create JobPosting record in database in ONE single query (no secondary update required)
     const jobPosting = await prisma.jobPosting.create({
       data: {
         telegramUserId: matchedTgUser.id,
@@ -391,15 +471,31 @@ export async function POST(req: Request) {
         driveDate: safeParseDate(extracted?.driveDate),
         otherImportantDates: datesText,
         rawEmailText: rawEmailText || fullTextContext,
+        eligibilityCheckResult: isAtsEnabled ? eligCheckResult : null,
+        eligibilityReason: isAtsEnabled ? eligReason : null,
+        unmetCriteria: isAtsEnabled ? unmetCriteriaJson : null,
+        ...(isAtsEnabled && eligCheckResult === "not_eligible" ? { status: "NOT_ELIGIBLE" } : {}),
       },
     });
 
-    let eligCheckResult = "uncertain";
-    let eligReason = "";
-    let unmetCriteriaJson = "[]";
-    let matchedCriteriaSummary = "";
-    let atsScoreSection = "";
-    let atsEdgeCaseNotice = "";
+    // If ATS check created an unlinked record, link it asynchronously in the background
+    if (atsSettled.status === "fulfilled" && atsSettled.value?.id) {
+      prisma.atsScoreCheck.update({
+        where: { id: atsSettled.value.id },
+        data: { jobPostingId: jobPosting.id },
+      }).catch(() => {});
+    }
+
+    // IF NOT ELIGIBLE & Feature ON: Suppress Telegram notification entirely (UNLESS student was shortlisted!)
+    if (isAtsEnabled && eligCheckResult === "not_eligible" && !isShortlistFound) {
+      console.log(`[Inbound] Notification SUPPRESSED for jobPosting ${jobPosting.id} - Student Not Eligible: ${eligReason}`);
+      return NextResponse.json({
+        ok: true,
+        jobPostingId: jobPosting.id,
+        notified: false,
+        reason: eligReason,
+      });
+    }
 
     const deadlineFormatted = formatDateDDMMYYYY(jobPosting.applicationDeadline);
 
@@ -415,92 +511,6 @@ export async function POST(req: Request) {
           return parts.length > 0 ? parts.join(" | ") : json;
         } catch { return json; }
       });
-
-    // ONLY run Phase 2 eligibility evaluation & ATS scoring if feature is turned ON by user!
-    if (isAtsEnabled) {
-      const [eligResult, atsResult] = await Promise.allSettled([
-        evaluateUserEligibility({
-          userId: matchedTgUser.userId,
-          rawEmailText: jobPosting.rawEmailText,
-          eligibilityCriteriaText: jobPosting.eligibilityCriteria,
-        }),
-        runAtsScoreCheck({
-          userId: matchedTgUser.userId,
-          jobPostingId: jobPosting.id,
-          triggeredBy: "auto_notification",
-        }),
-      ]);
-
-      if (eligResult.status === "fulfilled") {
-        const evalRes = eligResult.value;
-        eligCheckResult = evalRes.result;
-        eligReason = evalRes.reason;
-        unmetCriteriaJson = JSON.stringify(evalRes.unmetCriteria || []);
-        matchedCriteriaSummary = evalRes.matchedCriteriaSummary || "";
-
-        // Update JobPosting record with eligibility check results
-        await prisma.jobPosting.update({
-          where: { id: jobPosting.id },
-          data: {
-            eligibilityCheckResult: eligCheckResult,
-            eligibilityReason: eligReason,
-            unmetCriteria: unmetCriteriaJson,
-            ...(eligCheckResult === "not_eligible" ? { status: "NOT_ELIGIBLE" } : {}),
-          },
-        });
-      }
-
-      // IF NOT ELIGIBLE & Feature ON: Suppress Telegram notification entirely (UNLESS student was shortlisted!)
-      if (eligCheckResult === "not_eligible" && (!shortlistMatch || !shortlistMatch.found)) {
-        console.log(`[Inbound] Notification SUPPRESSED for jobPosting ${jobPosting.id} - Student Not Eligible: ${eligReason}`);
-        return NextResponse.json({
-          ok: true,
-          jobPostingId: jobPosting.id,
-          notified: false,
-          reason: eligReason,
-        });
-      }
-
-      if (atsResult.status === "fulfilled") {
-        const scoreResult = atsResult.value;
-        if (scoreResult && typeof scoreResult.overallScore === "number") {
-          const scoreTier =
-            scoreResult.overallScore >= 80
-              ? "Strong Match"
-              : scoreResult.overallScore >= 60
-                ? "Moderate Match"
-                : "Needs Improvement";
-
-          atsScoreSection += `\n\n🎯 <b>ATS Match Score: ${scoreResult.overallScore}% (${scoreTier})</b>`;
-
-          const topGaps: string[] = [];
-          if (Array.isArray(scoreResult.keywordGaps) && scoreResult.keywordGaps.length > 0) {
-            topGaps.push(...scoreResult.keywordGaps.slice(0, 3));
-          }
-          if (topGaps.length < 3 && Array.isArray(scoreResult.improvements)) {
-            for (const imp of scoreResult.improvements) {
-              if (topGaps.length >= 3) break;
-              const text = typeof imp === "string" ? imp : (imp?.suggestion || "");
-              if (text && !topGaps.includes(text)) topGaps.push(text);
-            }
-          }
-          if (topGaps.length > 0) {
-            const safeGaps = topGaps.map((g) => escapeHtml(g.replace(/^\[.*?\]\s*/, ""))).join(", ");
-            atsScoreSection += `\n⚡ <b>Top Improvements:</b> ${safeGaps}`;
-          }
-        }
-      } else {
-        const atsErr = atsResult.reason;
-        console.warn("[Inbound ATS Score Auto-check error]:", atsErr?.message || atsErr);
-        if (atsErr?.message === "NO_RESUME_FOUND") {
-          atsEdgeCaseNotice = `\n\nℹ️ <i>Add a resume to My Space to see inline ATS match scores & gap analysis on new drive alerts.</i>`;
-        } else if (atsErr?.message?.includes("limit reached")) {
-          atsEdgeCaseNotice = `\n\nℹ️ <i>Daily automated ATS scoring limit reached (10/10 checks today). Use "Check ATS Readiness" inside the app to score this drive manually.</i>`;
-        }
-      }
-    } else {
-      console.log(`[Inbound] Feature OFF: Proceeding with Phase 1 notification behavior for jobPosting ${jobPosting.id}`);
-    }
 
     const displayEligText = (isAtsEnabled && matchedCriteriaSummary) ? matchedCriteriaSummary : safeEligText;
 

@@ -47,16 +47,19 @@ STRICT JSON OUTPUT FORMAT (Respond ONLY with valid JSON, no markdown wrappers, n
 export async function evaluateUserEligibility(params: {
   userId: string;
   rawEmailText: string;
-  eligibilityCriteriaText: string;
+  eligibilityCriteriaText?: string;
+  preloadedUser?: any;
 }): Promise<EligibilityCheckResult> {
-  const { userId, rawEmailText, eligibilityCriteriaText } = params;
+  const { userId, rawEmailText, eligibilityCriteriaText = "", preloadedUser } = params;
 
   try {
-    // 1. Fetch User Profile
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { masterProfile: true, resumes: { take: 1, orderBy: { createdAt: "desc" } } },
-    });
+    // 1. Fetch User Profile (reuse preloaded user to eliminate DB roundtrip)
+    const user =
+      preloadedUser ||
+      (await prisma.user.findUnique({
+        where: { id: userId },
+        include: { masterProfile: true, resumes: { take: 1, orderBy: { createdAt: "desc" } } },
+      }));
 
     if (!user) {
       return {

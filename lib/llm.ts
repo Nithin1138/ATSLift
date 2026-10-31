@@ -7,6 +7,7 @@ export const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 22000);
 export const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS || 20000);
 
 const GROQ_FAST_MODELS = [
+  "qwen/qwen3.8-27b",
   "llama-3.1-8b-instant",
   "groq/compound-mini",
   "llama-3.3-70b-versatile",
