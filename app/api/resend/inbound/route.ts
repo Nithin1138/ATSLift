@@ -6,6 +6,16 @@ import { scheduleQStashReminder } from "@/lib/qstash";
 import { evaluateUserEligibility } from "@/lib/eligibility-checker";
 import { runAtsScoreCheck } from "@/lib/ats-scoring";
 import { maskEmail, maskIdentifier } from "@/lib/pii";
+import {
+  parseXlsxBuffer,
+  parseCsvText,
+  parsePdfBuffer,
+  parseGoogleSheetsLink,
+  searchRegNumberInText,
+  processAttachmentItem,
+  formatShortlistTelegramMessage,
+  type AttachmentMatchResult,
+} from "@/lib/attachment-parser";
 
 function extractCleanEmail(raw: string): string {
   if (!raw) return "";
@@ -222,6 +232,74 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, type: "GMAIL_CONFIRMATION" });
     }
 
+    // ── ATTACHMENT PARSING + REG NUMBER SHORTLIST DETECTION ──────────────────
+    const fullUser = await prisma.user.findUnique({
+      where: { id: matchedTgUser.userId },
+      include: { masterProfile: true },
+    });
+
+    const userRegNumber = fullUser?.masterProfile?.registrationNumber?.trim() || "";
+    const isAtsEnabled = fullUser?.masterProfile?.atsCheckEnabled ?? false;
+
+    let shortlistMatch: AttachmentMatchResult | null = null;
+
+    // 1. Check plain email body / text first (fast, zero-cost)
+    if (userRegNumber) {
+      const textSearch = searchRegNumberInText(fullTextContext + " " + rawHtmlText, userRegNumber);
+      if (textSearch.found) {
+        shortlistMatch = {
+          found: true,
+          source: "Email Body",
+          row: null,
+          contextSummary: textSearch.contextLine,
+        };
+      }
+    }
+
+    // 2. Try Google Sheets links in email body
+    if (!shortlistMatch && userRegNumber) {
+      try {
+        shortlistMatch = await parseGoogleSheetsLink(fullTextContext + " " + rawHtmlText, userRegNumber);
+      } catch (e) {
+        console.warn("[Inbound] Google Sheets parse error:", e);
+      }
+    }
+
+    // 3. Parse attachments (JSON payload attachments, multipart form data, or blobs)
+    if (!shortlistMatch && userRegNumber) {
+      const attachmentList: any[] = [];
+
+      if (Array.isArray(payload.attachments)) {
+        attachmentList.push(...payload.attachments);
+      }
+      if (Array.isArray(data.attachments)) {
+        attachmentList.push(...data.attachments);
+      }
+
+      // Check form-data fields for attachments
+      const attachmentKeys = Object.keys(payload).filter(
+        (k) => k.toLowerCase().includes("attachment") || k.toLowerCase().includes("file")
+      );
+      for (const k of attachmentKeys) {
+        if (!attachmentList.includes(payload[k])) {
+          attachmentList.push(payload[k]);
+        }
+      }
+
+      for (const att of attachmentList) {
+        try {
+          const match = await processAttachmentItem(att, userRegNumber);
+          if (match && match.found) {
+            shortlistMatch = match;
+            break;
+          }
+        } catch (attErr) {
+          console.warn("[Inbound] Error processing attachment:", attErr);
+        }
+      }
+    }
+
+    // ── LLM EXTRACTION ───────────────────────────────────────────────────────
     // Call LLM Extractor with both text & HTML
     const extracted = await extractJdInfoWithLLM(fullTextContext, rawHtmlText);
 
@@ -237,7 +315,6 @@ export async function POST(req: Request) {
       if (ec.rawEligibilityText) {
         eligText = String(ec.rawEligibilityText);
       } else {
-        // Convert structured object to human-readable text
         const parts: string[] = [];
         if (ec.branches && Array.isArray(ec.branches)) parts.push(`Branches: ${(ec.branches as string[]).join(", ")}`);
         if (ec.cgpaCutoff) parts.push(`CGPA: ${ec.cgpaCutoff}`);
@@ -267,13 +344,6 @@ export async function POST(req: Request) {
         rawEmailText: rawEmailText || fullTextContext,
       },
     });
-
-    // Check if user has turned ON Phase 2 ATS & Eligibility Feature
-    const fullUser = await prisma.user.findUnique({
-      where: { id: matchedTgUser.userId },
-      include: { masterProfile: true },
-    });
-    const isAtsEnabled = fullUser?.masterProfile?.atsCheckEnabled ?? false;
 
     let eligCheckResult = "uncertain";
     let eligReason = "";
@@ -354,7 +424,6 @@ export async function POST(req: Request) {
 
           atsScoreSection += `\n\n🎯 <b>ATS Match Score: ${scoreResult.overallScore}% (${scoreTier})</b>`;
 
-          // Format top actionable keyword & section improvements
           const topGaps: string[] = [];
           if (Array.isArray(scoreResult.keywordGaps) && scoreResult.keywordGaps.length > 0) {
             topGaps.push(...scoreResult.keywordGaps.slice(0, 3));
@@ -363,12 +432,9 @@ export async function POST(req: Request) {
             for (const imp of scoreResult.improvements) {
               if (topGaps.length >= 3) break;
               const text = typeof imp === "string" ? imp : (imp?.suggestion || "");
-              if (text && !topGaps.includes(text)) {
-                topGaps.push(text);
-              }
+              if (text && !topGaps.includes(text)) topGaps.push(text);
             }
           }
-
           if (topGaps.length > 0) {
             const safeGaps = topGaps.map((g) => escapeHtml(g.replace(/^\[.*?\]\s*/, ""))).join(", ");
             atsScoreSection += `\n⚡ <b>Top Improvements:</b> ${safeGaps}`;
@@ -377,7 +443,6 @@ export async function POST(req: Request) {
       } else {
         const atsErr = atsResult.reason;
         console.warn("[Inbound ATS Score Auto-check error]:", atsErr?.message || atsErr);
-
         if (atsErr?.message === "NO_RESUME_FOUND") {
           atsEdgeCaseNotice = `\n\nℹ️ <i>Add a resume to My Space to see inline ATS match scores & gap analysis on new drive alerts.</i>`;
         } else if (atsErr?.message?.includes("limit reached")) {
@@ -390,49 +455,82 @@ export async function POST(req: Request) {
 
     const displayEligText = (isAtsEnabled && matchedCriteriaSummary) ? matchedCriteriaSummary : safeEligText;
 
-    let tgMsg = `🎯 <b>New Placement Drive Detected!</b>\n\n`;
-    tgMsg += `🏢 <b>Company:</b> ${escapeHtml(jobPosting.companyName)}\n`;
-    tgMsg += `💼 <b>Role:</b> ${escapeHtml(jobPosting.roleTitle)}\n`;
-    tgMsg += `🎓 <b>Eligibility:</b> ${escapeHtml(displayEligText)}\n`;
-    if (jobPosting.packageDetails) {
-      tgMsg += `💰 <b>CTC / Stipend:</b> ${escapeHtml(jobPosting.packageDetails)}\n`;
-    }
-    tgMsg += `⏰ <b>Application Deadline:</b> <b>${deadlineFormatted}</b>`;
-
-    if (atsScoreSection) {
-      tgMsg += atsScoreSection;
-    } else if (atsEdgeCaseNotice) {
-      tgMsg += atsEdgeCaseNotice;
-    }
-
-    // Append caveat note if eligibility is UNCERTAIN (only when Phase 2 feature is ON)
-    if (isAtsEnabled && eligCheckResult === "uncertain") {
-      tgMsg += `\n\n⚠️ <i>Note: Eligibility couldn't be fully verified — check the criteria yourself. (${escapeHtml(eligReason || "Profile or JD criteria unverified")})</i>`;
-    }
-
-    // Build Inline Buttons: If ATS is ON, swap "Not Eligible" with "Update Resume" deep-link
+    // ── TELEGRAM MESSAGE BUILDER ──────────────────────────────────────────────
     const baseUrl = process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://atslift.com");
     const deepLinkUrl = `${baseUrl.replace(/\/$/, "")}/automations?openAtsCheck=${jobPosting.id}`;
 
-    const inlineKeyboard = isAtsEnabled
-      ? {
+    let tgMsg: string;
+    let inlineKeyboard: object;
+
+    if (shortlistMatch && shortlistMatch.found) {
+      // ── 🎉 SMART CONTEXT-ADAPTIVE SHORTLIST ALERT ────────────────────────
+      const formatted = formatShortlistTelegramMessage({
+        companyName,
+        roleTitle,
+        userRegNumber,
+        shortlistMatch,
+        subject,
+        rawEmailText: fullTextContext,
+      });
+
+      tgMsg = formatted.text;
+
+      inlineKeyboard = {
         inline_keyboard: [
           [
-            { text: "📝 Update Resume", url: deepLinkUrl },
+            { text: "📝 View Drive Details", url: deepLinkUrl },
             { text: "✅ Applied", callback_data: `applied:${jobPosting.id}` },
-            { text: "⏭️ Skip", callback_data: `skip:${jobPosting.id}` },
-          ],
-        ],
-      }
-      : {
-        inline_keyboard: [
-          [
-            { text: "✅ Applied", callback_data: `applied:${jobPosting.id}` },
-            { text: "❌ Not Eligible", callback_data: `not_eligible:${jobPosting.id}` },
-            { text: "⏭️ Skip", callback_data: `skip:${jobPosting.id}` },
           ],
         ],
       };
+
+      console.log(`[Inbound] 🎉 SHORTLIST MATCH (${formatted.eventType}) for reg: ${maskIdentifier(userRegNumber)}, company: ${companyName}`);
+    } else {
+      // ── 📢 NEW DRIVE ANNOUNCEMENT MODE ──────────────────────────────────
+      tgMsg = `📢 <b>New Placement Drive — ${escapeHtml(companyName)}!</b>\n\n`;
+      tgMsg += `💼 <b>Role:</b> ${escapeHtml(roleTitle)}\n`;
+      tgMsg += `🎓 <b>Eligibility:</b> ${escapeHtml(displayEligText)}\n`;
+      if (jobPosting.packageDetails) {
+        tgMsg += `💰 <b>CTC / Stipend:</b> ${escapeHtml(jobPosting.packageDetails)}\n`;
+      }
+      tgMsg += `⏰ <b>Apply By:</b> <b>${deadlineFormatted || "Check email"}</b>`;
+
+      if (userRegNumber) {
+        tgMsg += `\n\n🔍 <i>Shortlist tracking active for Reg No <code>${escapeHtml(userRegNumber)}</code> — we'll alert you instantly if your ID appears in any attachment.</i>`;
+      } else {
+        tgMsg += `\n\n💡 <i>Tip: Add your Placement Reg. Number in My Space to get auto-alerts whenever shortlists or interview slots drop!</i>`;
+      }
+
+      if (atsScoreSection) {
+        tgMsg += atsScoreSection;
+      } else if (atsEdgeCaseNotice) {
+        tgMsg += atsEdgeCaseNotice;
+      }
+
+      if (isAtsEnabled && eligCheckResult === "uncertain") {
+        tgMsg += `\n\n⚠️ <i>Eligibility couldn't be fully verified — double-check the criteria. (${escapeHtml(eligReason || "Profile or JD criteria unverified")})</i>`;
+      }
+
+      inlineKeyboard = isAtsEnabled
+        ? {
+          inline_keyboard: [
+            [
+              { text: "📝 Update Resume", url: deepLinkUrl },
+              { text: "✅ Applied", callback_data: `applied:${jobPosting.id}` },
+              { text: "⏭️ Skip", callback_data: `skip:${jobPosting.id}` },
+            ],
+          ],
+        }
+        : {
+          inline_keyboard: [
+            [
+              { text: "✅ Applied", callback_data: `applied:${jobPosting.id}` },
+              { text: "❌ Not Eligible", callback_data: `not_eligible:${jobPosting.id}` },
+              { text: "⏭️ Skip", callback_data: `skip:${jobPosting.id}` },
+            ],
+          ],
+        };
+    }
 
     console.log(`[Inbound] Sending Telegram to chatId: ${maskIdentifier(matchedTgUser.telegramChatId)}, company: ${jobPosting.companyName}`);
     const tgResult = await sendTelegramMessage(matchedTgUser.telegramChatId, tgMsg, inlineKeyboard);
@@ -445,10 +543,25 @@ export async function POST(req: Request) {
       ok: true,
       jobPostingId: jobPosting.id,
       notified: true,
+      shortlistDetected: shortlistMatch?.found ?? false,
       eligibilityResult: eligCheckResult,
     });
   } catch (error) {
     console.error("Error in /api/resend/inbound:", error);
     return NextResponse.json({ message: "Internal server error" }, { status: 500 });
   }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Find a cell value by any of the given keyword patterns */
+function getCell(cells: Record<string, string>, keywords: string[]): string | null {
+  for (const kw of keywords) {
+    for (const [key, val] of Object.entries(cells)) {
+      if (key.toLowerCase().includes(kw.toLowerCase()) && val?.trim()) {
+        return val.trim();
+      }
+    }
+  }
+  return null;
 }

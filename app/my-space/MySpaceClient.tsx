@@ -123,6 +123,7 @@ export default function MySpaceClient({ userEmail }: { userEmail: string }) {
   const [dateOfBirth, setDateOfBirth] = useState("");
   const [phone, setPhone] = useState("");
   const [location, setLocation] = useState("");
+  const [registrationNumber, setRegistrationNumber] = useState("");
   const [github, setGithub] = useState("");
   const [linkedin, setLinkedin] = useState("");
   const [portfolio, setPortfolio] = useState("");
@@ -216,6 +217,7 @@ export default function MySpaceClient({ userEmail }: { userEmail: string }) {
         setDateOfBirth(p.dateOfBirth || "");
         setPhone(p.phone || "");
         setLocation(p.location || "");
+        setRegistrationNumber(p.registrationNumber || "");
         setGithub(p.github || "");
         setLinkedin(p.linkedin || "");
         setPortfolio(p.portfolio || "");
@@ -440,6 +442,7 @@ export default function MySpaceClient({ userEmail }: { userEmail: string }) {
           dateOfBirth,
           phone,
           location,
+          registrationNumber,
           github,
           linkedin,
           portfolio,
@@ -772,6 +775,7 @@ export default function MySpaceClient({ userEmail }: { userEmail: string }) {
           dateOfBirth,
           phone,
           location,
+          registrationNumber,
           github,
           linkedin,
           portfolio,
@@ -1182,6 +1186,21 @@ export default function MySpaceClient({ userEmail }: { userEmail: string }) {
                         placeholder="Bengaluru, KA"
                         className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-bg-base text-text text-xs font-semibold focus:outline-none focus:border-primary"
                       />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                        <span className="font-black bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 px-1.5 py-0.5 rounded text-[9px] tracking-widest">ID</span>
+                        <span>Placement Reg. Number</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={registrationNumber}
+                        onChange={(e) => setRegistrationNumber(e.target.value.trim())}
+                        placeholder="e.g. 7Y6T8 or 22BCS045"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/40 dark:bg-amber-900/10 text-text text-xs font-semibold focus:outline-none focus:border-amber-500"
+                      />
+                      <p className="text-[10px] text-text-muted mt-0.5">Used to detect your shortlist in Excel / PDF / CSV lists sent by your placement cell.</p>
                     </div>
 
                     <div className="space-y-1">

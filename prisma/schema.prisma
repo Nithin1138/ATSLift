@@ -311,12 +311,13 @@ model MasterProfile {
   userId             String          @unique
   user               User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  fullName           String?
-  email              String?
-  collegeEmail       String?
-  dateOfBirth        String?
-  phone              String?
-  location           String?
+  fullName             String?
+  email                String?
+  collegeEmail         String?
+  dateOfBirth          String?
+  phone                String?
+  location             String?
+  registrationNumber   String?   // College/Placement cell registration ID (e.g. 7Y6T8)
   github             String?
   linkedin           String?
   portfolio          String?
