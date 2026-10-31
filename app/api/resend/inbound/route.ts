@@ -233,13 +233,38 @@ export async function POST(req: Request) {
     }
 
     // ── ATTACHMENT PARSING + REG NUMBER SHORTLIST DETECTION ──────────────────
-    const fullUser = await prisma.user.findUnique({
-      where: { id: matchedTgUser.userId },
-      include: { masterProfile: true },
-    });
+    let userRegNumber = "";
+    let isAtsEnabled = false;
 
-    const userRegNumber = fullUser?.masterProfile?.registrationNumber?.trim() || "";
-    const isAtsEnabled = fullUser?.masterProfile?.atsCheckEnabled ?? false;
+    if (matchedTgUser.userId) {
+      try {
+        const fullUser = await prisma.user.findUnique({
+          where: { id: matchedTgUser.userId },
+          include: { masterProfile: true },
+        });
+        userRegNumber = (fullUser?.masterProfile as any)?.registrationNumber?.trim() || "";
+        isAtsEnabled = fullUser?.masterProfile?.atsCheckEnabled ?? false;
+      } catch (dbErr: any) {
+        console.warn("[Inbound] Could not fetch masterProfile with registrationNumber:", dbErr?.message || dbErr);
+        try {
+          const basicUser = await prisma.user.findUnique({
+            where: { id: matchedTgUser.userId },
+            select: {
+              id: true,
+              masterProfile: {
+                select: {
+                  id: true,
+                  atsCheckEnabled: true,
+                },
+              },
+            },
+          });
+          isAtsEnabled = basicUser?.masterProfile?.atsCheckEnabled ?? false;
+        } catch (fallbackErr) {
+          console.warn("[Inbound] User fetch fallback failed:", fallbackErr);
+        }
+      }
+    }
 
     let shortlistMatch: AttachmentMatchResult | null = null;
 
@@ -276,13 +301,16 @@ export async function POST(req: Request) {
         attachmentList.push(...data.attachments);
       }
 
-      // Check form-data fields for attachments
+      // Check form-data fields for attachments (ignore the 'attachments' key itself)
       const attachmentKeys = Object.keys(payload).filter(
-        (k) => k.toLowerCase().includes("attachment") || k.toLowerCase().includes("file")
+        (k) => (k.toLowerCase().includes("attachment") || k.toLowerCase().includes("file")) && k !== "attachments"
       );
       for (const k of attachmentKeys) {
-        if (!attachmentList.includes(payload[k])) {
-          attachmentList.push(payload[k]);
+        const val = payload[k];
+        if (Array.isArray(val)) {
+          attachmentList.push(...val);
+        } else if (val && typeof val === "object") {
+          attachmentList.push(val);
         }
       }
 
@@ -338,8 +366,8 @@ export async function POST(req: Request) {
         roleTitle: roleTitle,
         eligibilityCriteria: eligText,
         packageDetails: extracted?.packageDetails || null,
-        applicationDeadline: extracted?.applicationDeadline ? new Date(extracted.applicationDeadline) : null,
-        driveDate: extracted?.driveDate ? new Date(extracted.driveDate) : null,
+        applicationDeadline: safeParseDate(extracted?.applicationDeadline),
+        driveDate: safeParseDate(extracted?.driveDate),
         otherImportantDates: datesText,
         rawEmailText: rawEmailText || fullTextContext,
       },
@@ -401,8 +429,8 @@ export async function POST(req: Request) {
         });
       }
 
-      // IF NOT ELIGIBLE & Feature ON: Suppress Telegram notification entirely
-      if (eligCheckResult === "not_eligible") {
+      // IF NOT ELIGIBLE & Feature ON: Suppress Telegram notification entirely (UNLESS student was shortlisted!)
+      if (eligCheckResult === "not_eligible" && (!shortlistMatch || !shortlistMatch.found)) {
         console.log(`[Inbound] Notification SUPPRESSED for jobPosting ${jobPosting.id} - Student Not Eligible: ${eligReason}`);
         return NextResponse.json({
           ok: true,
@@ -547,19 +575,38 @@ export async function POST(req: Request) {
       eligibilityResult: eligCheckResult,
     });
   } catch (error) {
-    console.error("Error in /api/resend/inbound:", error);
-    return NextResponse.json({ message: "Internal server error" }, { status: 500 });
+    console.error("Error in /api/resend/inbound:", error instanceof Error ? error.stack || error.message : error);
+    return NextResponse.json(
+      {
+        message: "Internal server error",
+        error: error instanceof Error ? error.message : String(error),
+      },
+      { status: 500 }
+    );
   }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+function safeParseDate(val: unknown): Date | null {
+  if (!val) return null;
+  if (val instanceof Date) {
+    return isNaN(val.getTime()) ? null : val;
+  }
+  if (typeof val === "string" || typeof val === "number") {
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
 /** Find a cell value by any of the given keyword patterns */
 function getCell(cells: Record<string, string>, keywords: string[]): string | null {
   for (const kw of keywords) {
     for (const [key, val] of Object.entries(cells)) {
-      if (key.toLowerCase().includes(kw.toLowerCase()) && val?.trim()) {
-        return val.trim();
+      const strVal = String(val ?? "").trim();
+      if (key.toLowerCase().includes(kw.toLowerCase()) && strVal) {
+        return strVal;
       }
     }
   }

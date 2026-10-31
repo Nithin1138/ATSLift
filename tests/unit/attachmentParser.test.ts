@@ -306,6 +306,52 @@ Please be punctual.`;
       assert.ok(result.text.includes("OFFER EXTENDED!"));
       assert.ok(result.text.includes("16 LPA"));
     });
+
+    it("handles numeric cell values without throwing TypeError (val.trim is not a function)", () => {
+      const numericCells: any = {
+        "sl no": 1,
+        "reg no": "7Y6T8",
+        "room no": 402,
+        batch: 3,
+        slot: "10:30 AM",
+      };
+
+      const match = {
+        found: true,
+        source: "Shortlist_Rooms.xlsx",
+        row: {
+          cells: numericCells,
+          rawLine: "1 | 7Y6T8 | 402 | 3",
+        },
+        contextSummary: "Interview schedule with room numbers",
+      };
+
+      const result = formatShortlistTelegramMessage({
+        companyName: "Amazon",
+        roleTitle: "SDE-1",
+        userRegNumber: "7Y6T8",
+        shortlistMatch: match,
+        subject: "Amazon Interview Shortlist and Room Allotment",
+      });
+
+      assert.ok(result);
+      assert.strictEqual(result.eventType, "interview");
+      assert.ok(result.text.includes("Amazon"));
+      assert.ok(result.text.includes("10:30 AM"));
+    });
+  });
+
+  describe("PDF Attachment Parser", () => {
+    it("safely handles PDF buffers without throwing unhandled exceptions", async () => {
+      const { parsePdfBuffer } = await import("../../lib/attachment-parser");
+      const samplePdfText = `%PDF-1.4\n1 0 obj\n<< /Length 120 >>\nstream\nShortlisted candidates for Round 2:\n21BCE1001\n7Y6T8\n21BCE1009\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF`;
+      const buffer = Buffer.from(samplePdfText, "latin1");
+
+      const result = await parsePdfBuffer(buffer, "7Y6T8", "Shortlist.pdf");
+      assert.ok(result !== null);
+      assert.strictEqual(result.found, true);
+      assert.strictEqual(result.source, "Shortlist.pdf");
+    });
   });
 });
 

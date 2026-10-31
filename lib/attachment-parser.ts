@@ -11,8 +11,18 @@
  *  - 🎊 Final Selection / Job Offer
  */
 import * as XLSX from "xlsx";
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
+
+// Dynamic loader for pdf-parse v2+ class or v1 function
+function getPdfParserClass(): any {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pdfMod = require("pdf-parse");
+    return pdfMod.PDFParse || pdfMod;
+  } catch (err) {
+    console.warn("[AttachmentParser] Could not load pdf-parse:", err);
+    return null;
+  }
+}
 
 export interface ParsedRow {
   /** All cell values in the row, keyed by column header (lowercased) or index */
@@ -171,16 +181,46 @@ export async function parsePdfBuffer(
 ): Promise<AttachmentMatchResult | null> {
   if (!buffer || !regNumber || regNumber.trim().length < 2) return null;
   try {
-    const data = await pdfParse(buffer);
-    const text = data.text || "";
-    const pattern = getRegPattern(regNumber);
+    let text = "";
+    const PDFClass = getPdfParserClass();
+    if (PDFClass) {
+      try {
+        if (typeof PDFClass === "function" && PDFClass.prototype?.getText) {
+          const parser = new PDFClass({ data: new Uint8Array(buffer) });
+          const res = await parser.getText();
+          text = res?.text || "";
+        } else if (typeof PDFClass === "function") {
+          const res = await PDFClass(buffer);
+          text = res?.text || "";
+        }
+      } catch (parserErr) {
+        console.warn("[AttachmentParser] Class-based PDF parsing error:", parserErr);
+      }
+    }
 
+    // Binary / Latin1 string fallback for fast matching when PDF has uncompressed text streams
+    if (!text) {
+      try {
+        text = buffer.toString("latin1");
+      } catch {
+        // ignore
+      }
+    }
+
+    const pattern = getRegPattern(regNumber);
     if (!pattern.test(text)) return null;
 
     // Find the line containing the reg number
     const lines = text.split(/\r?\n/).filter((l: string) => l.trim());
     const matchLine = lines.find((l: string) => pattern.test(l));
-    if (!matchLine) return null;
+    if (!matchLine) {
+      return {
+        found: true,
+        source: fileName,
+        row: null,
+        contextSummary: `Registration number ${regNumber} detected in ${fileName}`,
+      };
+    }
 
     // Try to build cells from the found line
     const parts = matchLine.split(/[\t|]+/).map((p: string) => p.trim()).filter(Boolean);
@@ -357,8 +397,9 @@ export function buildContextSummary(
 
 export function findCellValue(cells: Record<string, string>, keyword: string): string | null {
   for (const [key, val] of Object.entries(cells)) {
-    if (key.toLowerCase().includes(keyword.toLowerCase()) && val.trim()) {
-      return val.trim();
+    const strVal = String(val ?? "").trim();
+    if (key.toLowerCase().includes(keyword.toLowerCase()) && strVal) {
+      return strVal;
     }
   }
   return null;
@@ -525,16 +566,16 @@ export function formatShortlistTelegramMessage(params: {
   subject?: string;
   rawEmailText?: string;
 }): { text: string; eventType: ShortlistEventType } {
-  const cells = params.shortlistMatch.row?.cells || {};
-  const sourceLabel = escapeHtml(params.shortlistMatch.source);
-  const regCode = escapeHtml(params.userRegNumber);
-  const company = escapeHtml(params.companyName);
-  const role = escapeHtml(params.roleTitle);
+  const cells = params.shortlistMatch?.row?.cells || {};
+  const sourceLabel = escapeHtml(params.shortlistMatch?.source || "Shortlist Attachment");
+  const regCode = escapeHtml(params.userRegNumber || "");
+  const company = escapeHtml(params.companyName || "Placement Drive");
+  const role = escapeHtml(params.roleTitle || "Candidate");
 
   const eventType = detectShortlistEventType({
     subject: params.subject,
-    source: params.shortlistMatch.source,
-    contextText: (params.rawEmailText || "") + " " + (params.shortlistMatch.contextSummary || ""),
+    source: params.shortlistMatch?.source,
+    contextText: (params.rawEmailText || "") + " " + (params.shortlistMatch?.contextSummary || ""),
     cells,
   });
 
@@ -685,8 +726,9 @@ export function formatShortlistTelegramMessage(params: {
 function findFirstCell(cells: Record<string, string>, keywords: string[]): string | null {
   for (const kw of keywords) {
     for (const [key, val] of Object.entries(cells)) {
-      if (key.toLowerCase().includes(kw.toLowerCase()) && val?.trim()) {
-        return val.trim();
+      const strVal = String(val ?? "").trim();
+      if (key.toLowerCase().includes(kw.toLowerCase()) && strVal) {
+        return strVal;
       }
     }
   }
