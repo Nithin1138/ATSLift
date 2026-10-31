@@ -49,6 +49,7 @@ erDiagram
 
 ### B. Personal Data Vault: `MasterProfile`
 - Single source of truth for student credentials:
+  - `registrationNumber`: College/placement cell unique ID (e.g. `7Y6T8` or `22BCS045`) for automated shortlist & slot tracking.
   - CGPA, Active Backlogs, Academic Gap Years, College Name, Degree.
   - Coding profiles (`leetcode`, `codeforces`, `codechef`, `hackerrank`, `gfg`).
   - Raw JSON arrays for skills, projects, certifications, and achievements.

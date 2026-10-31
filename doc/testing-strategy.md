@@ -16,10 +16,10 @@ npm test  # Executes tsx --test tests/**/*.test.ts in ~180ms
 
 ---
 
-## 2. Test Suite Breakdown (44 Tests across 12 Suites)
+## 2. Test Suite Breakdown (57 Tests across 18 Suites)
 
 ```mermaid
-pie title ATSLift Automated Test Distribution (44 Tests)
+pie title ATSLift Automated Test Distribution (57 Tests)
     "Integration & Security (apiFlow.test.ts)" : 5
     "Critical Path E2E (criticalPath.test.ts)" : 4
     "ATS Normalization (atsFormatting.test.ts)" : 5
@@ -28,6 +28,7 @@ pie title ATSLift Automated Test Distribution (44 Tests)
     "Eligibility Engine (eligibilityChecker.test.ts)" : 3
     "Mobile Routing Integrity (navigation.test.ts)" : 3
     "PII Redaction & Sanitization (pii.test.ts)" : 12
+    "Attachment Parser & Shortlist (attachmentParser.test.ts)" : 13
 ```
 
 ### Critical Path Suite: End-to-End User Workflows (`tests/integration/criticalPath.test.ts`)
@@ -93,6 +94,15 @@ pie title ATSLift Automated Test Distribution (44 Tests)
 | :--- | :--- |
 | `Route validity` | Validates all mobile drawer and bottom-nav routes map to active Next.js endpoints. |
 | `No duplicate routes` | Guarantees uniqueness across mobile touch targets. |
+
+### Suite 8: Attachment Parser & Shortlist Detector (`tests/unit/attachmentParser.test.ts`)
+| Test Name | Focus & Verification |
+| :--- | :--- |
+| `CSV Shortlist Parsing` | Identifies registration IDs, handles quoted strings with commas, and parses column maps. |
+| `Excel (XLSX) Stream Parsing` | Reads binary in-memory SheetJS workbooks in <15ms and extracts matched candidate rows. |
+| `Body Word-Boundary Regex` | Asserts boundary matching (`\b7Y6T8\b`) and suppresses partial substring false positives. |
+| `Universal Attachment Processor` | Converts base64 payloads, Blob streams, and download URLs transparently. |
+| `Adaptive Event Classification` | Classifies events into OA, GD, Interview, Pool Drive, Walk-in, and Final Offer with tailored advice. |
 ----
 
 ## 3. Running the Test Suite

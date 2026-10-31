@@ -5,7 +5,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon_Serverless-336791?style=flat-square&logo=postgresql)](https://neon.tech/)
 [![Prisma](https://img.shields.io/badge/Prisma-7.x-2D3748?style=flat-square&logo=prisma)](https://www.prisma.io/)
 [![Gemini](https://img.shields.io/badge/AI_Engine-Google_Gemini-8E75C2?style=flat-square&logo=google)](https://ai.google.dev/)
-[![Tests](https://img.shields.io/badge/Tests-44_Passing_(12_Suites)-brightgreen?style=flat-square&logo=node.js)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-57_Passing_(18_Suites)-brightgreen?style=flat-square&logo=node.js)](tests/)
 [![Coverage](https://img.shields.io/badge/Coverage-100%25_Critical_Paths-blue?style=flat-square)](tests/integration/criticalPath.test.ts)
 [![Latency](https://img.shields.io/badge/Latency_Reduction-68%25_(14.2s%E2%86%924.5s)-orange?style=flat-square)](doc/benchmarks.md)
 
@@ -48,6 +48,8 @@ flowchart LR
 ## ⚡ Core Engineering Highlights
 
 * **68% Latency Optimization (14.2s → 4.5s):** Parallelized LLM eligibility verification and ATS scoring using `Promise.allSettled`, preventing serverless function timeouts and eliminating cascading bottlenecks.
+* **Multi-Format Shortlist & Attachment Engine:** Parses in-memory binary `.xlsx`/`.xls` (SheetJS), `.csv`, `.pdf` (`pdf-parse`), and live Google Sheets `/export?format=csv` streams, tracking candidate registration numbers (`\b7Y6T8\b`) without high serverless memory overhead.
+* **Context-Adaptive Notification Classifier:** Automatically detects 6 discrete recruitment stages (Online Assessment, Group Discussion, Technical/HR Interview, Pool Campus, Office Walk-in, Final Offer), dispatching tailored checklists, test launch links, and Google Maps routing directly to Telegram.
 * **Fault-Tolerant AI Fallbacks:** Built-in heuristic scoring engine ensures zero downtime; if Gemini times out or outputs unparseable JSON, the system gracefully calculates a multi-factor baseline score and actionable suggestions.
 * **Structured Observability:** Integrated structured JSON logger (`lib/logger.ts`) with automated latency tracing (`logger.timeAsync`), sensitive credential redaction, and error categorization.
 * **Automated Rate Limiting:** Enforces a daily quota of 10 automated ATS checks per user via atomic PostgreSQL count queries (`getDailyAtsCheckCount`).
