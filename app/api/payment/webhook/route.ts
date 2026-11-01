@@ -44,6 +44,40 @@ export async function POST(req: NextRequest) {
       console.log(`[Webhook] Processing payment_link.paid: resumeId=${resumeId}, paymentId=${paymentId}`);
 
       if (resumeId) {
+        // ── 1. IDEMPOTENCY CHECK: EVENT DEDUPLICATION ────────────────────────
+        // Check if resume is already marked PAID to prevent duplicate updates,
+        // duplicate analytics tracking, and duplicate confirmation emails on webhooks retries/replays.
+        const existingResume = await prisma.resume.findUnique({
+          where: { id: resumeId },
+          select: { id: true, paymentStatus: true, paymentId: true },
+        });
+
+        if (existingResume?.paymentStatus === "PAID") {
+          logger.info(`[Webhook Idempotency] Resume ${resumeId} is already marked PAID. Webhook replay ignored.`, {
+            resumeId,
+            paymentId,
+          });
+          return NextResponse.json(
+            { status: "already_processed", message: "Webhook event already handled (idempotent)." },
+            { status: 200 }
+          );
+        }
+
+        // Check if this payment event was already recorded in PaymentEvent
+        const existingEvent = await prisma.paymentEvent.findFirst({
+          where: {
+            resumeId,
+            status: "PAID",
+          },
+        });
+        if (existingEvent) {
+          logger.info(`[Webhook Idempotency] PaymentEvent already logged for resume ${resumeId}. Skipping replay.`);
+          return NextResponse.json(
+            { status: "already_processed", message: "Payment event already logged." },
+            { status: 200 }
+          );
+        }
+
         const updatedResume = await prisma.resume.update({
           where: { id: resumeId },
           data: {
@@ -54,6 +88,20 @@ export async function POST(req: NextRequest) {
           },
         });
         console.log(`[Webhook] ✓ Resume ${resumeId} updated to PAID. Payment Status: ${updatedResume.paymentStatus}`);
+
+        // Record the payment event for persistent idempotency tracking
+        try {
+          await prisma.paymentEvent.create({
+            data: {
+              resumeId,
+              sessionId: updatedResume.sessionId,
+              status: "PAID",
+              amount: amountPaid,
+            },
+          });
+        } catch (eventErr) {
+          console.warn("[Webhook] Failed to record PaymentEvent dedupe record:", eventErr);
+        }
 
         // Log successful checkout unlock analytics event via webhook
         try {
@@ -132,6 +180,15 @@ ${proj.duration ? `Duration: ${proj.duration}\n` : ""}${proj.bullets.map((b: str
 
       if (resumeId) {
         try {
+          const current = await prisma.resume.findUnique({
+            where: { id: resumeId },
+            select: { paymentStatus: true },
+          });
+          if (current?.paymentStatus === "PAID") {
+            logger.info(`[Webhook] Ignoring payment.failed because resume ${resumeId} is already PAID.`);
+            return NextResponse.json({ status: "ignored_already_paid" }, { status: 200 });
+          }
+
           await prisma.resume.update({
             where: { id: resumeId },
             data: { paymentStatus: "FAILED" },
@@ -160,6 +217,15 @@ ${proj.duration ? `Duration: ${proj.duration}\n` : ""}${proj.bullets.map((b: str
 
       if (resumeId) {
         try {
+          const current = await prisma.resume.findUnique({
+            where: { id: resumeId },
+            select: { paymentStatus: true },
+          });
+          if (current?.paymentStatus === "PAID") {
+            logger.info(`[Webhook] Ignoring payment_link.expired because resume ${resumeId} is already PAID.`);
+            return NextResponse.json({ status: "ignored_already_paid" }, { status: 200 });
+          }
+
           await prisma.resume.update({
             where: { id: resumeId },
             data: { paymentStatus: "EXPIRED" },

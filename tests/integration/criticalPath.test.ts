@@ -55,11 +55,13 @@ describe("Critical Path End-to-End Workflows", () => {
   });
 
   // 3. Idempotent Payment Reconciliation Flow
-  test("Critical Path: Payment webhook reconciles order state idempotently", () => {
-    // Simulated state store for order reconciliation
+  test("Critical Path: Payment webhook reconciles order state idempotently with event deduplication", () => {
+    // Simulated state store for order reconciliation and side-effect tracking
     const processedOrders = new Map<string, { status: string; paymentId: string; processedAt: number }>();
+    let emailDispatches = 0;
 
     function processPaymentWebhook(orderId: string, paymentId: string, event: string) {
+      // Event-ID / Order deduplication check
       if (processedOrders.has(orderId)) {
         return { isDuplicate: true, status: processedOrders.get(orderId)!.status };
       }
@@ -70,6 +72,7 @@ describe("Critical Path End-to-End Workflows", () => {
           paymentId,
           processedAt: Date.now(),
         });
+        emailDispatches++; // Side-effect: transactional email dispatch
         return { isDuplicate: false, status: "PAID" };
       }
 
@@ -80,12 +83,14 @@ describe("Critical Path End-to-End Workflows", () => {
     const firstDelivery = processPaymentWebhook("order_12345", "pay_abc123", "payment.captured");
     assert.strictEqual(firstDelivery.isDuplicate, false);
     assert.strictEqual(firstDelivery.status, "PAID");
+    assert.strictEqual(emailDispatches, 1, "First delivery must trigger email dispatch");
 
-    // Second incoming webhook: Duplicate delivery from Razorpay
+    // Second incoming webhook: Duplicate delivery / replay from Razorpay
     const secondDelivery = processPaymentWebhook("order_12345", "pay_abc123", "payment.captured");
     assert.strictEqual(secondDelivery.isDuplicate, true, "Duplicate delivery must be recognized as idempotent");
     assert.strictEqual(secondDelivery.status, "PAID");
     assert.strictEqual(processedOrders.size, 1, "Only one record should exist in the payment ledger");
+    assert.strictEqual(emailDispatches, 1, "Confirmation email must NOT re-send on webhook replays");
   });
 
   // 4. End-to-End PII Redaction Pipeline on Student Submissions

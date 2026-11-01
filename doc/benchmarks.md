@@ -5,7 +5,7 @@
 All benchmarks documented below were measured on the live production environment (`atslift.app`) running Next.js 16 on Vercel, Neon Serverless PostgreSQL, and Cloudflare Edge Network.
 
 - **Overall High-Concurrency Success Rate**: **100.0%** (0 Failed Requests under burst loads).
-- **Placement Pipeline Processing Time**: Optimized from **14.2s to 1.8s** (**87% reduction** via 3-way parallel DAG execution, preloaded DB profiles, and Groq LPU inference; shortlist alerts delivered in **<500ms**).
+- **Placement Pipeline Processing Time**: Optimized from **14.2s to 4.5s** (**68% reduction**, measured **4.35s P50** under 50 concurrent requests via 3-way parallel DAG execution, preloaded DB profiles, and parallel LLM inference; shortlist alerts delivered in **<500ms**).
 - **Database Network Payload Size**: Reduced by **~85%** across core authenticated pages via selective Prisma field projections.
 - **First Contentful Paint (FCP)**: Reduced by **~1.8s** on mobile by replacing blocking CSS `@import` fonts with self-hosted Next.js Google Fonts and font preconnect headers.
 - **Client Wallet Balance Latency**: Reduced from **~220ms** to **<5ms** via in-memory deduplication and client-side SWR caching.
