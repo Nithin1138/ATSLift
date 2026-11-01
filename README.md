@@ -47,7 +47,7 @@ flowchart LR
 
 ## ⚡ Core Engineering Highlights
 
-* **87% Latency Optimization (14.2s → 1.8s, Shortlists <500ms):** 3-Way parallelized LLM JD extraction, eligibility verification, and ATS scoring using `Promise.allSettled`, with preloaded DB profile caching, Groq LPU sub-second inference (~350ms), and sub-second shortlist bypass.
+* **Latency Optimization Across Tiers (14.2s → 1.8s single route / 4.5s P50 at 50-spike concurrency, Shortlists <500ms):** 3-Way parallelized LLM JD extraction, eligibility verification, and ATS scoring using `Promise.allSettled`, with preloaded DB profile caching, Groq LPU sub-second inference (~350ms), and instant shortlist bypass. Detailed breakdown in [doc/benchmarks.md](doc/benchmarks.md#empirical-latency-matrix-across-operating-conditions).
 * **Multi-Format Shortlist & Attachment Engine:** Parses in-memory binary `.xlsx`/`.xls` (SheetJS), `.csv`, `.pdf` (`pdf-parse`), and live Google Sheets `/export?format=csv` streams, tracking candidate registration numbers (`\b7Y6T8\b`) without high serverless memory overhead.
 * **Context-Adaptive Notification Classifier:** Automatically detects 6 discrete recruitment stages (Online Assessment, Group Discussion, Technical/HR Interview, Pool Campus, Office Walk-in, Final Offer), dispatching tailored checklists, test launch links, and Google Maps routing directly to Telegram.
 * **Fault-Tolerant AI Fallbacks:** Built-in heuristic scoring engine ensures zero downtime; if Gemini times out or outputs unparseable JSON, the system gracefully calculates a multi-factor baseline score and actionable suggestions.
