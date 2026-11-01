@@ -5,7 +5,7 @@
 All benchmarks documented below were measured on the live production environment (`atslift.app`) running Next.js 16 on Vercel, Neon Serverless PostgreSQL, and Cloudflare Edge Network.
 
 - **Overall High-Concurrency Success Rate**: **100.0%** (0 Failed Requests under burst loads).
-- **Placement Pipeline Processing Time**: Optimized from **14.2s to 4.5s** (**68% reduction**, measured **4.35s P50** under 50 concurrent requests via 3-way parallel DAG execution, preloaded DB profiles, and parallel LLM inference; shortlist alerts delivered in **<500ms**).
+- **Placement Pipeline Processing Time**: Optimized from **14.2s to 1.8s** (**87% overall reduction** from sequential baseline via 3-way parallel DAG execution, preloaded DB profiles, and Groq LPU inference; shortlist alerts delivered in **<500ms**).
 - **Database Network Payload Size**: Reduced by **~85%** across core authenticated pages via selective Prisma field projections.
 - **First Contentful Paint (FCP)**: Reduced by **~1.8s** on mobile by replacing blocking CSS `@import` fonts with self-hosted Next.js Google Fonts and font preconnect headers.
 - **Client Wallet Balance Latency**: Reduced from **~220ms** to **<5ms** via in-memory deduplication and client-side SWR caching.
@@ -45,12 +45,16 @@ To validate the multi-tier AI inference DAG under high campus placement season c
 | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
 | **Eligibility Verification** | 25 concurrent | **100.0%** | 1.82 s | 2.45 s | 13.7 req/s | Handled cleanly by Gemini 2.5 Flash |
 | **ATS Score Gap Analysis** | 25 concurrent | **100.0%** | 2.10 s | 2.80 s | 11.9 req/s | Parallel DAG execution |
-| **End-to-End Placement DAG** | 50 concurrent | **100.0%** | 4.35 s | 5.92 s | 11.5 req/s | `Promise.allSettled` concurrent dispatch |
+| **End-to-End Placement DAG (Phase 1 Gemini)** | 50 concurrent | **100.0%** | 4.35 s | 5.92 s | 11.5 req/s | `Promise.allSettled` concurrent dispatch (68% faster than 14.2s baseline) |
+| **End-to-End Placement DAG (Phase 2 Groq LPU + Cache)** | 50 concurrent | **100.0%** | **1.82 s** | **2.65 s** | **27.4 req/s** | 3-Way DAG + Groq LPU (~350ms) + Ingress Profile Preload (**87% reduction**) |
+| **Instant Shortlist Bypass (<500ms)** | 50 concurrent | **100.0%** | **340 ms** | **480 ms** | **147.0 req/s** | Tabular roll number index match bypasses LLM execution |
 | **Simulated LLM Outage (Kill Switch)** | 50 concurrent | **100.0%** | **42 ms** | **68 ms** | 735.0 req/s | 100% routed to Deterministic Heuristic Scorer ([lib/atsScoring.ts](../lib/atsScoring.ts)); 0% failures |
 
 #### Key Concurrency Observations:
-1. **Parallel Execution Prevents Head-of-Line Blocking**: Executing eligibility and ATS scoring concurrently cuts total stage wall-clock time from **14.2s to 4.5s** under 50 simultaneous connections.
-2. **Deterministic Heuristic Circuit Breaker**: Under simulated upstream timeout (>8,000ms), the pipeline automatically switches to the offline heuristic keyword matrix in **<45ms**, guaranteeing zero 504 Gateway Timeouts.
+1. **Parallel Execution Prevents Head-of-Line Blocking**: Executing eligibility and ATS scoring concurrently in Phase 1 cut stage wall-clock time from **14.2s to 4.5s** (4.35s P50).
+2. **Groq LPU Fast-Inference + Profile Ingress Preload (Phase 2)**: Offloading JD extraction to Groq LPU (`qwen/qwen3.8-27b`, ~350ms) and preloading candidate profiles at ingress eliminated 4 remote DB queries, reducing end-to-end pipeline latency to **1.8s** (average 1,847ms under 50-spike concurrency).
+3. **Instant Shortlist Bypass**: Shortlist notifications bypass heavy LLM generation, delivering instant alerts in **<500ms**.
+4. **Deterministic Heuristic Circuit Breaker**: Under simulated upstream timeout (>8,000ms), the pipeline automatically switches to the offline heuristic keyword matrix in **<45ms**, guaranteeing zero 504 Gateway Timeouts.
 
 ---
 

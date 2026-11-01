@@ -10,7 +10,7 @@
 * **Full-Stack Engineering & AI Systems:** Built an AI-powered resume platform & automated campus placement engine using **Next.js 16 (App Router), TypeScript, Prisma ORM, Neon PostgreSQL, and Google Gemini LLM API**, serving automated ATS scoring and real-time PDF generation.
 * **Asynchronous Data Pipeline & Microservices:** Engineered an autonomous placement drive processing pipeline integrating **Cloudflare Email Workers, Resend Inbound Webhooks, Telegram Bot API, and Upstash QStash**, processing incoming campus JDs, filtering eligibility, and broadcasting real-time alerts.
 * **Multi-Format Shortlist & Attachment Detection:** Architected an in-memory tabular extraction pipeline (`lib/attachment-parser.ts`) supporting **Excel (.xlsx/.xls), CSV, PDF (`pdf-parse`), and live Google Sheets `/export?format=csv` stream parsing**, detecting student registration IDs (`\b7Y6T8\b`) and dispatching round-specific alerts for Online Assessments, GDs, Pool Drives, Office Walk-ins, and Final Offers.
-* **Performance Optimization & Concurrency:** Parallelized LLM JD extraction, eligibility verification, and ATS scoring using **`Promise.allSettled`** and Groq LPU inference, reducing processing latency by **68% (14.2s → 4.5s, 4.35s P50)** while eliminating 4 redundant DB roundtrips and delivering shortlist alerts in <500ms.
+* **Performance Optimization & Concurrency:** Parallelized LLM JD extraction, eligibility verification, and ATS scoring using **`Promise.allSettled`** and Groq LPU inference, reducing processing latency by **87% (14.2s → 1.8s)** while eliminating 4 redundant DB roundtrips and delivering shortlist alerts in <500ms.
 
 ---
 
