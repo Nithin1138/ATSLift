@@ -54,6 +54,33 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+export function isCellMatch(cellText: string, regNumber: string, pattern?: RegExp): boolean {
+  if (!cellText || !regNumber) return false;
+  const cleanCell = String(cellText).trim();
+  const cleanReg = String(regNumber).trim();
+  if (cleanCell.length === 0 || cleanReg.length === 0) return false;
+
+  // 1. Direct case-insensitive equality
+  if (cleanCell.toLowerCase() === cleanReg.toLowerCase()) return true;
+
+  // 2. Word boundary regex match
+  const pat = pattern || getRegPattern(cleanReg);
+  if (pat.test(cleanCell)) return true;
+
+  // 3. Normalized alphanumeric match (stripping spaces, hyphens, slashes, underscores, dots)
+  const normCell = cleanCell.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  const normReg = cleanReg.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  if (normReg.length >= 3 && normCell === normReg) return true;
+
+  // 4. Substring boundary match for normalized registration number (e.g. "Roll: 21BCE1001-CSE")
+  if (normReg.length >= 4) {
+    const normRegex = new RegExp(`(^|[^a-zA-Z0-9])${escapeRegex(normReg)}($|[^a-zA-Z0-9])`, "i");
+    if (normRegex.test(cleanCell)) return true;
+  }
+
+  return false;
+}
+
 function getRegPattern(regNumber: string): RegExp {
   const clean = regNumber.trim();
   return /^[a-zA-Z0-9_-]+$/.test(clean)
@@ -75,17 +102,48 @@ function escapeHtml(str: string): string {
 
 export function parseCsvText(csvText: string, regNumber: string): AttachmentMatchResult | null {
   if (!csvText || !regNumber || regNumber.trim().length < 2) return null;
-  const lines = csvText.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) return null;
 
-  // First non-empty line is the header
-  const headerLine = lines[0];
-  const headers = splitCsvLine(headerLine).map((h) => h.trim().toLowerCase().replace(/"/g, ""));
+  // 1. First attempt parsing with SheetJS (handles multiline cells, quotes, commas, tabs, semicolons)
+  try {
+    const workbook = XLSX.read(csvText, { type: "string" });
+    if (workbook && workbook.SheetNames && workbook.SheetNames.length > 0) {
+      const match = parseXlsxBuffer(Buffer.from(csvText, "utf-8"), regNumber, "CSV attachment");
+      if (match && match.found) return match;
+    }
+  } catch {
+    // fallback to manual delimited line parser
+  }
+
+  // 2. Resilient delimited line parser fallback
+  const lines = csvText.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length === 0) return null;
+
+  const firstLine = lines[0];
+  let delimiter = ",";
+  const commas = (firstLine.match(/,/g) || []).length;
+  const tabs = (firstLine.match(/\t/g) || []).length;
+  const semicolons = (firstLine.match(/;/g) || []).length;
+  const pipes = (firstLine.match(/\|/g) || []).length;
+
+  if (tabs > commas && tabs > semicolons) delimiter = "\t";
+  else if (semicolons > commas && semicolons > tabs) delimiter = ";";
+  else if (pipes > commas && pipes > semicolons) delimiter = "|";
+
+  const isFirstLineHeader =
+    /roll|reg|name|student|branch|dept|status|slot|s\.?no/i.test(firstLine);
+
+  const startIdx = isFirstLineHeader && lines.length > 1 ? 1 : 0;
+  const headers = isFirstLineHeader
+    ? splitDelimitedLine(firstLine, delimiter).map((h) => h.trim().toLowerCase().replace(/"/g, ""))
+    : [];
+
   const pattern = getRegPattern(regNumber);
 
-  for (let i = 1; i < lines.length; i++) {
-    const cols = splitCsvLine(lines[i]).map((c) => c.trim().replace(/"/g, ""));
-    const matchFound = cols.some((col) => pattern.test(col)) || pattern.test(lines[i]);
+  for (let i = startIdx; i < lines.length; i++) {
+    const cols = splitDelimitedLine(lines[i], delimiter).map((c) => c.trim().replace(/"/g, ""));
+    const matchFound =
+      cols.some((col) => isCellMatch(col, regNumber, pattern)) ||
+      isCellMatch(lines[i], regNumber, pattern);
 
     if (matchFound) {
       const cells: Record<string, string> = {};
@@ -101,10 +159,26 @@ export function parseCsvText(csvText: string, regNumber: string): AttachmentMatc
       };
     }
   }
+
+  // If first line wasn't checked as data and no match was found, check first line directly
+  if (startIdx === 1) {
+    const cols = splitDelimitedLine(lines[0], delimiter).map((c) => c.trim().replace(/"/g, ""));
+    if (cols.some((col) => isCellMatch(col, regNumber, pattern))) {
+      const cells: Record<string, string> = {};
+      cols.forEach((val, idx) => (cells[`col_${idx}`] = val));
+      return {
+        found: true,
+        source: "CSV attachment",
+        row: { cells, rawLine: lines[0] },
+        contextSummary: buildContextSummary(cells),
+      };
+    }
+  }
+
   return null;
 }
 
-function splitCsvLine(line: string): string[] {
+function splitDelimitedLine(line: string, delimiter = ","): string[] {
   const result: string[] = [];
   let current = "";
   let inQuotes = false;
@@ -112,7 +186,7 @@ function splitCsvLine(line: string): string[] {
     const ch = line[i];
     if (ch === '"') {
       inQuotes = !inQuotes;
-    } else if (ch === "," && !inQuotes) {
+    } else if (ch === delimiter && !inQuotes) {
       result.push(current);
       current = "";
     } else {
@@ -143,13 +217,48 @@ export function parseXlsxBuffer(
         raw: false,
       }) as string[][];
 
-      if (rows.length < 2) continue;
+      if (!rows || rows.length === 0) continue;
 
-      const headers = rows[0].map((h) => String(h).trim().toLowerCase());
+      // Smart Header Finder:
+      // Scan top 10 rows to locate the header row (identifying "roll", "reg", "name", "student", "branch", "status", "s.no", etc.)
+      let headerRowIdx = 0;
+      let headers: string[] = [];
 
-      for (let i = 1; i < rows.length; i++) {
-        const cols = rows[i].map((c) => String(c).trim());
-        const matchFound = cols.some((col) => pattern.test(col));
+      for (let r = 0; r < Math.min(rows.length, 10); r++) {
+        const rowStr = rows[r].map((c) => String(c ?? "").toLowerCase()).join(" ");
+        if (
+          rowStr.includes("roll") ||
+          rowStr.includes("reg") ||
+          rowStr.includes("name") ||
+          rowStr.includes("student") ||
+          rowStr.includes("branch") ||
+          rowStr.includes("status") ||
+          rowStr.includes("s.no") ||
+          rowStr.includes("sl.no")
+        ) {
+          headerRowIdx = r;
+          headers = rows[r].map((h) => String(h ?? "").trim().toLowerCase());
+          break;
+        }
+      }
+
+      // If no explicit header detected and multiple rows exist, default headers to row 0
+      if (headers.length === 0 && rows.length > 1) {
+        headers = rows[0].map((h) => String(h ?? "").trim().toLowerCase());
+      }
+
+      // Iterate through rows
+      for (let i = 0; i < rows.length; i++) {
+        // Skip header row ONLY if it doesn't match the student's registration ID
+        if (i === headerRowIdx && headers.length > 0 && rows.length > 1) {
+          const isHeaderMatching = rows[i].some((col) => isCellMatch(String(col ?? ""), regNumber, pattern));
+          if (!isHeaderMatching) continue;
+        }
+
+        const cols = rows[i].map((c) => String(c ?? "").trim());
+        const matchFound =
+          cols.some((col) => isCellMatch(col, regNumber, pattern)) ||
+          isCellMatch(cols.join(" "), regNumber, pattern);
 
         if (matchFound) {
           const cells: Record<string, string> = {};
@@ -243,7 +352,8 @@ export async function parsePdfBuffer(
 
 export async function processAttachmentItem(
   att: any,
-  regNumber: string
+  regNumber: string,
+  options?: { emailId?: string; resendApiKey?: string }
 ): Promise<AttachmentMatchResult | null> {
   if (!att || !regNumber) return null;
 
@@ -273,7 +383,7 @@ export async function processAttachmentItem(
     buffer = Buffer.from(ab);
   } else if (att.download_url || att.url) {
     try {
-      const res = await fetch(att.download_url || att.url, { signal: AbortSignal.timeout(8000) });
+      const res = await fetch(att.download_url || att.url, { signal: AbortSignal.timeout(12000) });
       if (res.ok) {
         const ab = await res.arrayBuffer();
         buffer = Buffer.from(ab);
@@ -283,17 +393,48 @@ export async function processAttachmentItem(
     }
   }
 
+  // Resend API attachment fetch fallback when att.id is present but buffer is empty
+  if (!buffer && att.id && options?.emailId && options?.resendApiKey) {
+    try {
+      const res = await fetch(
+        `https://api.resend.com/emails/receiving/${options.emailId}/attachments/${att.id}`,
+        {
+          headers: { Authorization: `Bearer ${options.resendApiKey}` },
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        const dlUrl = json.download_url || json.url;
+        if (dlUrl) {
+          const fileRes = await fetch(dlUrl, { signal: AbortSignal.timeout(15000) });
+          if (fileRes.ok) {
+            const ab = await fileRes.arrayBuffer();
+            buffer = Buffer.from(ab);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`[AttachmentParser] Failed downloading Resend attachment (${att.id}):`, e);
+    }
+  }
+
   if (!buffer || buffer.length === 0) return null;
 
   const mimeType = String(att.contentType || att.mimeType || att.type || "").toLowerCase();
 
-  // 1. Excel (XLSX / XLS) by extension, MIME type, or PK zip signature
+  // 1. Excel (XLSX / XLS / XLSM / XLSB) by extension, MIME type, or PK zip / OLE2 signature
+  const isZipPk = buffer.length > 4 && buffer[0] === 0x50 && buffer[1] === 0x4b;
+  const isOle2 = buffer.length > 4 && buffer[0] === 0xd0 && buffer[1] === 0xcf;
   if (
     filenameLower.endsWith(".xlsx") ||
     filenameLower.endsWith(".xls") ||
+    filenameLower.endsWith(".xlsm") ||
+    filenameLower.endsWith(".xlsb") ||
     mimeType.includes("spreadsheet") ||
     mimeType.includes("excel") ||
-    (buffer.length > 4 && buffer[0] === 0x50 && buffer[1] === 0x4b)
+    isZipPk ||
+    isOle2
   ) {
     const res = parseXlsxBuffer(buffer, regNumber, filename);
     if (res && res.found) return res;
@@ -309,14 +450,27 @@ export async function processAttachmentItem(
     if (res && res.found) return res;
   }
 
-  // 3. CSV by extension or text inspection
-  if (filenameLower.endsWith(".csv") || mimeType.includes("csv")) {
+  // 3. CSV / TSV by extension or text inspection
+  if (
+    filenameLower.endsWith(".csv") ||
+    filenameLower.endsWith(".tsv") ||
+    mimeType.includes("csv") ||
+    mimeType.includes("tab-separated")
+  ) {
     const text = buffer.toString("utf-8");
     const res = parseCsvText(text, regNumber);
-    if (res) return { ...res, source: filename };
+    if (res && res.found) return { ...res, source: filename };
   }
 
-  // 4. Universal plain text fallback search
+  // 4. Universal SheetJS attempt on buffer (handles unlabelled spreadsheets)
+  try {
+    const res = parseXlsxBuffer(buffer, regNumber, filename);
+    if (res && res.found) return res;
+  } catch {
+    // ignore
+  }
+
+  // 5. Universal plain text fallback search
   try {
     const text = buffer.toString("utf-8");
     const csvRes = parseCsvText(text, regNumber);
@@ -348,27 +502,159 @@ export async function parseGoogleSheetsLink(
 
   // Match all Google Sheets links in email body
   const sheetUrlRegex =
-    /https:\/\/docs\.google\.com\/spreadsheets\/d\/([A-Za-z0-9_-]+)(?:\/[^?\s"<)]*)?(?:\?[^\s"<)]*)?/g;
+    /https:\/\/docs\.google\.com\/spreadsheets\/d\/([A-Za-z0-9_-]+)(?:\/[^?\s"<)]*)?(?:\?([^\s"<)]*))?/g;
 
   const matches = [...emailText.matchAll(sheetUrlRegex)];
   if (!matches.length) return null;
 
   for (const match of matches) {
     const sheetId = match[1];
-    const exportUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+    const queryParams = match[2] || "";
+    const gidMatch = queryParams.match(/gid=(\d+)/) || emailText.match(/#gid=(\d+)/);
+    const gid = gidMatch ? gidMatch[1] : null;
 
+    // 1. First attempt full workbook export as XLSX (retrieves ALL sheets/tabs)
     try {
-      const res = await fetch(exportUrl, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
+      const xlsxExportUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx`;
+      const res = await fetch(xlsxExportUrl, { signal: AbortSignal.timeout(10000) });
+      if (res.ok) {
+        const ab = await res.arrayBuffer();
+        const buffer = Buffer.from(ab);
+        const result = parseXlsxBuffer(buffer, regNumber, `Google Sheet (${sheetId.slice(0, 8)}...)`);
+        if (result && result.found) return result;
+      }
+    } catch (e) {
+      console.warn("[AttachmentParser] Google Sheets XLSX export failed, falling back to CSV:", e);
+    }
 
-      const csvText = await res.text();
-      const result = parseCsvText(csvText, regNumber);
-      if (result) {
-        return { ...result, source: `Google Sheet (${sheetId.slice(0, 8)}...)` };
+    // 2. Fallback to CSV export (with exact gid if present)
+    try {
+      const csvExportUrl = gid
+        ? `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`
+        : `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+
+      const res = await fetch(csvExportUrl, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const csvText = await res.text();
+        const result = parseCsvText(csvText, regNumber);
+        if (result && result.found) {
+          return { ...result, source: `Google Sheet (${sheetId.slice(0, 8)}...)` };
+        }
       }
     } catch (err) {
-      console.warn("[AttachmentParser] Google Sheets fetch error:", err);
+      console.warn("[AttachmentParser] Google Sheets CSV fetch error:", err);
     }
+  }
+  return null;
+}
+
+// ─── Google Drive File Links ──────────────────────────────────────────────────
+
+export async function parseGoogleDriveLink(
+  emailText: string,
+  regNumber: string
+): Promise<AttachmentMatchResult | null> {
+  if (!emailText || !regNumber) return null;
+
+  const driveRegex =
+    /https:\/\/drive\.google\.com\/(?:file\/d\/([a-zA-Z0-9_-]+)|open\?id=([a-zA-Z0-9_-]+))/g;
+
+  const matches = [...emailText.matchAll(driveRegex)];
+  if (!matches.length) return null;
+
+  for (const match of matches) {
+    const fileId = match[1] || match[2];
+    if (!fileId) continue;
+
+    try {
+      const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+      const res = await fetch(downloadUrl, {
+        signal: AbortSignal.timeout(10000),
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+      });
+      if (!res.ok) continue;
+
+      const ab = await res.arrayBuffer();
+      const buffer = Buffer.from(ab);
+      const att = {
+        filename: `GoogleDrive_${fileId.slice(0, 8)}`,
+        content: buffer,
+      };
+      const matchRes = await processAttachmentItem(att, regNumber);
+      if (matchRes && matchRes.found) {
+        return { ...matchRes, source: `Google Drive File (${fileId.slice(0, 8)}...)` };
+      }
+    } catch (err) {
+      console.warn("[AttachmentParser] Google Drive file fetch error:", err);
+    }
+  }
+  return null;
+}
+
+// ─── HTML Table Shortlist Parser ──────────────────────────────────────────────
+
+export function parseHtmlTableText(
+  htmlText: string,
+  regNumber: string
+): AttachmentMatchResult | null {
+  if (!htmlText || !regNumber || !htmlText.includes("<table")) return null;
+
+  try {
+    const pattern = getRegPattern(regNumber);
+    const tableRegex = /<table[^>]*>([\s\S]*?)<\/table>/gi;
+    let tableMatch;
+
+    while ((tableMatch = tableRegex.exec(htmlText)) !== null) {
+      const tableContent = tableMatch[1];
+      const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+      let rowMatch;
+      const rows: string[][] = [];
+
+      while ((rowMatch = rowRegex.exec(tableContent)) !== null) {
+        const cellRegex = /<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi;
+        let cellMatch;
+        const cols: string[] = [];
+        while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
+          const cellText = cellMatch[1].replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").trim();
+          cols.push(cellText);
+        }
+        if (cols.length > 0) rows.push(cols);
+      }
+
+      if (rows.length === 0) continue;
+
+      let headers: string[] = [];
+      const isFirstRowHeader = rows[0].some((c) =>
+        /roll|reg|name|student|branch|status|slot/i.test(c)
+      );
+      if (isFirstRowHeader) {
+        headers = rows[0].map((h) => h.toLowerCase().trim());
+      }
+
+      const startIdx = isFirstRowHeader && rows.length > 1 ? 1 : 0;
+      for (let i = startIdx; i < rows.length; i++) {
+        const cols = rows[i];
+        const matchFound =
+          cols.some((col) => isCellMatch(col, regNumber, pattern)) ||
+          isCellMatch(cols.join(" "), regNumber, pattern);
+
+        if (matchFound) {
+          const cells: Record<string, string> = {};
+          cols.forEach((val, idx) => {
+            const key = headers[idx] || `col_${idx}`;
+            cells[key] = val;
+          });
+          return {
+            found: true,
+            source: "Email Table",
+            row: { cells, rawLine: cols.join(" | ") },
+            contextSummary: buildContextSummary(cells),
+          };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[AttachmentParser] HTML table parse error:", e);
   }
   return null;
 }

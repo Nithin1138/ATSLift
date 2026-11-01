@@ -9,18 +9,18 @@ npm test  # Executes tsx --test tests/**/*.test.ts in ~180ms
 ```
 
 ### Why Native Node.js Test Runner?
-- **Speed**: Executes all 59 tests across 19 suites in **~1.2s**.
+- **Speed**: Executes all 63 tests across 20 suites in **~600ms**.
 - **Zero Config**: No `jest.config.js`, `babel.config.js`, or complex transform configurations required.
 - **Native TypeScript Support**: Seamless TypeScript execution powered by `tsx` (esbuild).
 - **Long-Term Maintainability**: Relies on Node.js core APIs that never suffer from breaking third-party package deprecations.
 
 ---
 
-## 2. Test Suite Breakdown (59 Tests across 19 Suites)
+## 2. Test Suite Breakdown (63 Tests across 20 Suites)
 
 ```mermaid
-pie title ATSLift Automated Test Distribution (59 Tests)
-    "Integration & Security (apiFlow.test.ts)" : 5
+pie title ATSLift Automated Test Distribution (63 Tests)
+    "Integration & Security (apiFlow.test.ts)" : 6
     "Critical Path E2E (criticalPath.test.ts)" : 4
     "ATS Normalization (atsFormatting.test.ts)" : 5
     "ATS Scoring & Fallbacks (atsScoring.test.ts)" : 5
@@ -28,7 +28,7 @@ pie title ATSLift Automated Test Distribution (59 Tests)
     "Eligibility Engine (eligibilityChecker.test.ts)" : 3
     "Mobile Routing Integrity (navigation.test.ts)" : 3
     "PII Redaction & Sanitization (pii.test.ts)" : 12
-    "Attachment Parser & Shortlist (attachmentParser.test.ts)" : 15
+    "Attachment Parser & Shortlist (attachmentParser.test.ts)" : 18
 ```
 
 ### Critical Path Suite: End-to-End User Workflows (`tests/integration/criticalPath.test.ts`)

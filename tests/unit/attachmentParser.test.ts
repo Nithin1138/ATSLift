@@ -353,5 +353,74 @@ Please be punctual.`;
       assert.strictEqual(result.source, "Shortlist.pdf");
     });
   });
+
+  describe("Spreadsheet & Multi-Format Shortlist Edge Cases", () => {
+    it("parses Excel with title banners and matches hyphenated or spaced roll numbers", () => {
+      const sheetData = [
+        ["COLLEGE OF ENGINEERING & TECHNOLOGY - PLACEMENT CELL"],
+        ["BATCH 2026 - TEKION ROUND 2 SHORTLIST"],
+        ["S.No", "Registration ID", "Student Name", "Branch", "Status", "Slot"],
+        ["1", "21-BCE-1001", "Aarav Sharma", "CSE", "Selected", "10:00 AM"],
+        ["2", "7-Y-6-T-8", "Nithin Kumar", "CSE", "Selected for Round 2", "11:30 AM"],
+        ["3", "21-BCE-1003", "Priya Patel", "ECE", "Waitlist", "12:00 PM"],
+      ];
+
+      const ws = XLSX.utils.aoa_to_sheet(sheetData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Shortlist");
+      const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+      // Search with unhyphenated registration number "7Y6T8"
+      const result = parseXlsxBuffer(buffer, "7Y6T8", "Tekion_Round2.xlsx");
+      assert.ok(result !== null);
+      assert.strictEqual(result.found, true);
+      assert.strictEqual(result.row?.cells["registration id"], "7-Y-6-T-8");
+      assert.strictEqual(result.row?.cells["student name"], "Nithin Kumar");
+      assert.strictEqual(result.row?.cells["slot"], "11:30 AM");
+    });
+
+    it("parses semicolon-delimited and tab-delimited CSV shortlists", () => {
+      const tsvData = `SNo\tRollNumber\tCandidate\tStage\tTimeSlot\n1\t21BCE001\tStudent A\tRound 1\t10 AM\n2\t7Y6T8\tNithin\tRound 2\t02:00 PM`;
+      const tsvResult = parseCsvText(tsvData, "7Y6T8");
+      assert.ok(tsvResult !== null);
+      assert.strictEqual(tsvResult.found, true);
+      assert.strictEqual(tsvResult.row?.cells["rollnumber"], "7Y6T8");
+      assert.strictEqual(tsvResult.row?.cells["timeslot"], "02:00 PM");
+
+      const semiColonData = `SNo;RollNumber;Candidate;Stage\n1;21BCE001;Student A;Round 1\n2;7Y6T8;Nithin;Round 2`;
+      const semiResult = parseCsvText(semiColonData, "7Y6T8");
+      assert.ok(semiResult !== null);
+      assert.strictEqual(semiResult.found, true);
+      assert.strictEqual(semiResult.row?.cells["rollnumber"], "7Y6T8");
+    });
+
+    it("parses HTML tables embedded directly in email body", async () => {
+      const { parseHtmlTableText } = await import("../../lib/attachment-parser");
+      const htmlBody = `
+        <html>
+          <body>
+            <p>Dear Candidates, find the shortlisted students below:</p>
+            <table border="1">
+              <thead>
+                <tr><th>S.No</th><th>Roll No</th><th>Student Name</th><th>Interview Slot</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>1</td><td>21BCE1001</td><td>Alice</td><td>10:00 AM</td></tr>
+                <tr><td>2</td><td>7Y6T8</td><td>Nithin</td><td>11:45 AM</td></tr>
+              </tbody>
+            </table>
+          </body>
+        </html>
+      `;
+
+      const match = parseHtmlTableText(htmlBody, "7Y6T8");
+      assert.ok(match !== null);
+      assert.strictEqual(match.found, true);
+      assert.strictEqual(match.source, "Email Table");
+      assert.strictEqual(match.row?.cells["roll no"], "7Y6T8");
+      assert.strictEqual(match.row?.cells["student name"], "Nithin");
+      assert.strictEqual(match.row?.cells["interview slot"], "11:45 AM");
+    });
+  });
 });
 

@@ -14,8 +14,8 @@
 ### Performance Highlights
 * **87% Pipeline Latency Reduction (14.2s → 1.8s)**: Parallelized LLM extraction, eligibility verification, and ATS scoring into a 3-way DAG using `Promise.allSettled`, preloaded cached database profiles, and sub-second Groq LPU inference.
 * **Instant Shortlist Bypass (<500ms)**: Shortlist and tabular candidate announcements bypass LLM extraction entirely, indexing candidate registration numbers in under 50ms.
-* **Multi-Format Attachment Engine**: High-throughput parsing of `.xlsx`, `.xls`, `.csv`, `.pdf` stream fallbacks, and live Google Sheets `/export?format=csv` downloads.
-* **100% Passing Test Suite**: 59 automated unit, integration, and critical path tests across 19 test suites executing in ~1.2s via Node's native test runner (`tsx --test`).
+* **Multi-Format Attachment Engine**: High-throughput parsing of `.xlsx`, `.xls`, `.csv`, `.tsv`, `.pdf` stream fallbacks, Google Sheets multi-tab XLSX exports, and Resend inbound attachment stream downloads.
+* **100% Passing Test Suite**: 63 automated unit, integration, and critical path tests across 20 test suites executing in ~600ms via Node's native test runner (`tsx --test`).
 
 ---
 
@@ -173,10 +173,13 @@ flowchart TD
 * **Performance Gain**: Total pipeline latency dropped to **1.8s** (an 87% improvement), with shortlist emails processing in **<500ms**.
 
 ### 4.2 Multi-Format Tabular & Attachment Parser (`lib/attachment-parser.ts`)
-* **SheetJS (`xlsx`)**: Ingests base64/buffer payloads, extracts worksheets, and safely converts all cells to strings. Numeric cells are guarded with `String(val).trim()` to eliminate `TypeError: val.trim is not a function`.
-* **`pdf-parse` Resiliency**: Accommodates both standard function and modern class constructor invocations. If PDF streams contain binary junk, a Latin-1 text extractor recovers text payloads without crashing.
-* **Google Sheets Live Ingestion**: Detects `https://docs.google.com/spreadsheets/d/...` links in the email body, converts them into `/export?format=csv` downloads, and parses the live CSV stream.
-* **Registration Number Sniffing**: Uses bounded boundary matching (`\b[0-9]{2}[A-Z0-9]{3,8}\b`) against candidate profiles to detect shortlisted candidates in real time.
+* **Resend Inbound Receiving Attachments API**: Webhook payloads (`email.received`) only supply attachment metadata (`id`, `filename`, `content_type`). The webhook engine queries `GET /emails/receiving/:email_id/attachments/:id` to retrieve temporary pre-signed CDN download URLs and streams the binary files directly into in-memory Buffers.
+* **Multipart & Edge MIME Decoding**: Extracts attachments from multipart form-data (`req.formData()`) and decodes base64-encoded MIME streams (`extractMimeAttachmentsAndText`) forwarded by Cloudflare Email Workers.
+* **SheetJS (`xlsx`)**: Ingests base64/buffer payloads, extracts worksheets, and safely converts all cells to strings. Features intelligent header scanning (evaluating top 10 rows for table headers), handles single-row and row-0 shortlists, and normalizes alphanumeric registration IDs across hyphens, spaces, and punctuation (`isCellMatch`).
+* **Multi-Delimiter CSV/TSV Engine**: Parses comma, semicolon, tab, and pipe-delimited data using SheetJS with an auto-detecting manual fallback.
+* **Multi-Tab Google Sheets Export**: Ingests Google Sheets links by first exporting the complete workbook as XLSX (`/export?format=xlsx`) to scan all tabs (e.g., Round 1, Round 2, CSE, ECE), with fallback to CSV (`&gid=...`).
+* **Google Drive & HTML Table Extraction**: Automatically parses Google Drive shared document links (`drive.google.com/file/d/...`) and inline HTML tables (`<table>...<tr>...<td>`) embedded directly in email bodies.
+* **`pdf-parse` Resiliency**: Accommodates both standard function and modern class constructor invocations with a Latin-1 text stream extractor fallback.
 
 ### 4.3 Stage-Adaptive Notification Classifier
 The system categorizes campus placement emails into 6 discrete recruitment stages:
@@ -279,7 +282,7 @@ model Transaction {
 
 ## 6. Testing & Quality Engineering Matrix
 
-The project enforces quality with **59 automated tests across 19 suites** using the Node.js native test runner via `tsx`:
+The project enforces quality with **63 automated tests across 20 suites** using the Node.js native test runner via `tsx`:
 
 ```bash
 # Execute entire test suite
@@ -292,13 +295,13 @@ npm run stress:test
 npm run test:email:all
 ```
 
-### Complete Breakdown of the 19 Test Suites (59 Tests Total):
+### Complete Breakdown of the 20 Test Suites (63 Tests Total):
 
 | # | Test Suite | File | Tests | Core Coverage |
 | :-: | :--- | :--- | :-: | :--- |
 | 1 | **Critical Path E2E** | `tests/integration/criticalPath.test.ts` | 4 | Density constraint (Normal $\le$ 135, Concise $\le$ 90 chars), JD gap matching, Idempotent payment webhook, PII masking |
-| 2 | **API Flow & Security** | `tests/integration/apiFlow.test.ts` | 5 | MIME parsing, HMAC verification, API validation schemas, rate limiting, `/api/health` |
-| 3 | **Attachment & Shortlists** | `tests/unit/attachmentParser.test.ts` | 15 | CSV/XLSX binary buffers, PDF fallbacks, numeric cells, 6 event categories, context templates |
+| 2 | **API Flow & Security** | `tests/integration/apiFlow.test.ts` | 6 | MIME parsing, HMAC verification, API validation schemas, rate limiting, `/api/health`, binary spreadsheet pipeline |
+| 3 | **Attachment & Shortlists** | `tests/unit/attachmentParser.test.ts` | 18 | CSV/XLSX binary buffers, PDF fallbacks, numeric cells, 6 event categories, context templates, title banners, TSV/semicolon delimiters, HTML tables |
 | 4 | **PII Redaction** | `tests/unit/pii.test.ts` | 12 | Email/phone masking, Aadhaar/SSN scrubbing, Bearer tokens, ATS profile anonymization |
 | 5 | **Cover Letter Engine** | `tests/unit/cover-letter.test.ts` | 7 | Duplicate candidate name cleaning, punctuation fixes, case-insensitive duplicate removals |
 | 6 | **ATS Scoring & Fallbacks** | `tests/unit/atsScoring.test.ts` | 5 | 10/day rate quota, minimal profile fallback scoring, keyword gap calculation, score clamping [35, 95] |
@@ -315,6 +318,7 @@ npm run test:email:all
 | 17 | **Zustand Form State** | `tests/unit/zustandState.test.ts` | 1 | Form persistence across step transitions |
 | 18 | **LaTeX/PDF Formatter** | `tests/unit/latexFormatter.test.ts` | 1 | Print media CSS styling and A4 page boundary integrity |
 | 19 | **Skills Engine Matrix** | `tests/unit/skillsEngine.test.ts` | 1 | Deterministic categorization of programming languages and libraries |
+| 20 | **Mobile Routing** | `tests/unit/navigation.test.ts` | 3 | 1-thumb mobile navigation routes, non-empty paths, no duplicate touch targets, active route prefix matching |
 
 ---
 

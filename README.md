@@ -5,7 +5,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon_Serverless-336791?style=flat-square&logo=postgresql)](https://neon.tech/)
 [![Prisma](https://img.shields.io/badge/Prisma-7.x-2D3748?style=flat-square&logo=prisma)](https://www.prisma.io/)
 [![Gemini](https://img.shields.io/badge/AI_Engine-Google_Gemini-8E75C2?style=flat-square&logo=google)](https://ai.google.dev/)
-[![Tests](https://img.shields.io/badge/Tests-59_Passing_(19_Suites)-brightgreen?style=flat-square&logo=node.js)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-63_Passing_(20_Suites)-brightgreen?style=flat-square&logo=node.js)](tests/)
 [![Coverage](https://img.shields.io/badge/Coverage-100%25_Critical_Paths-blue?style=flat-square)](tests/integration/criticalPath.test.ts)
 [![Latency](https://img.shields.io/badge/Latency_Reduction-87%25_(14.2s%E2%86%921.8s)-orange?style=flat-square)](doc/benchmarks.md)
 
@@ -67,16 +67,16 @@ flowchart LR
 | **AI & NLP** | Google Gemini 2.5 Flash (`@google/genai`), Groq Fallback Engine, Heuristic Keyword Parser |
 | **Async Queues & Cloud** | Cloudflare Email Workers, Resend Webhooks, Upstash QStash HTTP queues, Vercel |
 | **Messaging & Bot** | Telegram Bot API with inline action callbacks (`Applied`, `Skip`, `Update Resume`) |
-| **Testing** | Node 20+ Native Test Runner via `tsx` (**59 Automated Tests across 19 Suites**) |
+| **Testing** | Node 20+ Native Test Runner via `tsx` (**63 Automated Tests across 20 Suites**) |
 
 ---
 
 ## 🧪 Testing & Quality Engineering
 
-The test suite runs with zero external test framework bloat using Node's built-in test runner (**59 tests executed in ~1.2s**):
+The test suite runs with zero external test framework bloat using Node's built-in test runner (**63 tests executed in ~600ms**):
 
 ```bash
-# Run all 59 unit, integration, and critical path tests
+# Run all 63 unit, integration, and critical path tests
 npm test
 
 # Run stress & concurrency benchmarks against live routes
@@ -86,13 +86,13 @@ npm run stress:test
 npm run test:email:all
 ```
 
-### 19 Verified Test Suites Breakdown (59 Tests Total):
+### 20 Verified Test Suites Breakdown (63 Tests Total):
 
 | Suite | File | Count | Focus & Verification |
 | :--- | :--- | :---: | :--- |
 | **Critical Path E2E** | `tests/integration/criticalPath.test.ts` | 4 | Density constraint (Normal $\le$ 135 chars, Concise $\le$ 90 chars), JD gap matching, Idempotent payment webhook, End-to-end PII masking |
-| **API Flow & Security** | `tests/integration/apiFlow.test.ts` | 5 | Inbound MIME parsing, HMAC-SHA256 signature verification, API schema adherence, sliding-window rate limiters, `/api/health` schema |
-| **Attachment & Shortlist Parser** | `tests/unit/attachmentParser.test.ts` | 15 | CSV/XLSX binary parsing, PDF stream fallback, numeric cell safeguards, 6 recruitment event categories, context-adaptive Telegram templates |
+| **API Flow & Security** | `tests/integration/apiFlow.test.ts` | 6 | Inbound MIME parsing, HMAC-SHA256 signature verification, API schema adherence, sliding-window rate limiters, `/api/health` schema, binary spreadsheet pipeline |
+| **Attachment & Shortlist Parser** | `tests/unit/attachmentParser.test.ts` | 18 | CSV/XLSX binary parsing, PDF stream fallback, numeric cell safeguards, 6 recruitment event categories, title banner handling, TSV/semicolon delimiters, HTML tables |
 | **PII Redaction & Sanitization** | `tests/unit/pii.test.ts` | 12 | Email/phone masking, Aadhaar/SSN scrubbing, Bearer token masking, ATS profile anonymization, deep logger recursive sanitization |
 | **Cover Letter Engine** | `tests/unit/cover-letter.test.ts` | 7 | Candidate duplicate name stripping, case-insensitive duplicate cleaning, standard sign-off punctuation, placeholder removal |
 | **ATS Scoring & Fallbacks** | `tests/unit/atsScoring.test.ts` | 5 | Daily quota limit (10/day), minimal profile baseline scoring, keyword gap detection, score boundary clamping [35, 95] |

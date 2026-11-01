@@ -11,6 +11,8 @@ import {
   parseCsvText,
   parsePdfBuffer,
   parseGoogleSheetsLink,
+  parseGoogleDriveLink,
+  parseHtmlTableText,
   searchRegNumberInText,
   processAttachmentItem,
   formatShortlistTelegramMessage,
@@ -24,26 +26,98 @@ function extractCleanEmail(raw: string): string {
   return addr.toLowerCase().trim();
 }
 
+function extractMimeAttachmentsAndText(rawBody: string): { text: string; html: string; attachments: any[] } {
+  const boundaryMatch = rawBody.match(/boundary="?([^"\r\n;]+)"?/i);
+  if (!boundaryMatch) {
+    return { text: rawBody, html: "", attachments: [] };
+  }
+  const boundary = boundaryMatch[1];
+  const parts = rawBody.split(new RegExp(`--${boundary}(?:--)?`));
+  let text = "";
+  let html = "";
+  const attachments: any[] = [];
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const splitIdx = trimmed.indexOf("\r\n\r\n") !== -1 ? trimmed.indexOf("\r\n\r\n") : trimmed.indexOf("\n\n");
+    if (splitIdx === -1) continue;
+    const headerSection = trimmed.slice(0, splitIdx);
+    const bodySection = trimmed.slice(splitIdx).trim();
+
+    const contentTypeMatch = headerSection.match(/content-type:\s*([^;\r\n]+)/i);
+    const ct = contentTypeMatch ? contentTypeMatch[1].toLowerCase().trim() : "";
+    const filenameMatch =
+      headerSection.match(/filename="?([^"\r\n]+)"?/i) ||
+      headerSection.match(/name="?([^"\r\n]+)"?/i);
+    const filename = filenameMatch ? filenameMatch[1].trim() : "";
+
+    const isBase64 = /content-transfer-encoding:\s*base64/i.test(headerSection);
+
+    if (filename || /application\/(pdf|vnd|octet|zip)|text\/csv/i.test(ct)) {
+      try {
+        const buffer = isBase64
+          ? Buffer.from(bodySection.replace(/\s+/g, ""), "base64")
+          : Buffer.from(bodySection, "utf-8");
+        attachments.push({
+          filename: filename || "attachment",
+          contentType: ct,
+          content: buffer,
+        });
+      } catch {
+        // ignore decoding errors
+      }
+    } else if (ct.includes("text/html")) {
+      html += bodySection;
+    } else if (ct.includes("text/plain") || !text) {
+      text += bodySection;
+    }
+  }
+
+  return { text: text || rawBody, html, attachments };
+}
+
 export async function POST(req: Request) {
   try {
     const contentType = req.headers.get("content-type") || "";
     let payload: Record<string, unknown> = {};
+    const formAttachments: any[] = [];
 
     if (contentType.includes("application/json")) {
       payload = await req.json();
     } else if (contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")) {
       const form = await req.formData();
       for (const [key, val] of form.entries()) {
-        payload[key] = val;
+        if (val && typeof val === "object" && typeof (val as any).arrayBuffer === "function") {
+          const fileObj = val as any;
+          try {
+            const ab = await fileObj.arrayBuffer();
+            formAttachments.push({
+              filename: fileObj.name || key || "attachment",
+              contentType: fileObj.type || "",
+              content: Buffer.from(ab),
+            });
+          } catch (e) {
+            console.warn("[Inbound] Failed reading form file:", e);
+          }
+        } else {
+          payload[key] = val;
+        }
       }
     } else {
-      // Raw body (Cloudflare may send raw email or plain text)
+      // Raw body (Cloudflare may send raw email RFC 2822 or plain text)
       const rawBody = await req.text();
       try {
         payload = JSON.parse(rawBody);
       } catch {
-        // Not JSON — treat raw body as email text fallback
-        payload = { text: rawBody, type: "cloudflare.email" };
+        // Not JSON — check if it's a multipart MIME email
+        if (rawBody.includes("boundary=") || contentType.includes("message/rfc822")) {
+          const parsedMime = extractMimeAttachmentsAndText(rawBody);
+          payload = { text: parsedMime.text, html: parsedMime.html, type: "cloudflare.email" };
+          formAttachments.push(...parsedMime.attachments);
+        } else {
+          payload = { text: rawBody, type: "cloudflare.email" };
+        }
       }
     }
 
@@ -265,6 +339,10 @@ export async function POST(req: Request) {
           include: { masterProfile: true, resumes: { take: 1, orderBy: { createdAt: "desc" } } },
         });
         userRegNumber = (fullUser?.masterProfile as any)?.registrationNumber?.trim() || "";
+        if (!userRegNumber && fullUser?.resumes?.[0]?.content) {
+          const content = fullUser.resumes[0].content as any;
+          userRegNumber = String(content?.registrationNumber || content?.rollNumber || content?.regNo || "").trim();
+        }
         isAtsEnabled = fullUser?.masterProfile?.atsCheckEnabled ?? false;
       } catch (dbErr: any) {
         console.warn("[Inbound] Could not fetch masterProfile with registrationNumber:", dbErr?.message || dbErr);
@@ -303,7 +381,16 @@ export async function POST(req: Request) {
       }
     }
 
-    // 2. Try Google Sheets links in email body
+    // 2. Check HTML tables in email body (frequently used by campus placement cells)
+    if (!shortlistMatch && userRegNumber && rawHtmlText) {
+      try {
+        shortlistMatch = parseHtmlTableText(rawHtmlText, userRegNumber);
+      } catch (e) {
+        console.warn("[Inbound] HTML table parse error:", e);
+      }
+    }
+
+    // 3. Try Google Sheets links in email body (exports entire workbook with all tabs)
     if (!shortlistMatch && userRegNumber) {
       try {
         shortlistMatch = await parseGoogleSheetsLink(fullTextContext + " " + rawHtmlText, userRegNumber);
@@ -312,9 +399,18 @@ export async function POST(req: Request) {
       }
     }
 
-    // 3. Parse attachments (JSON payload attachments, multipart form data, or blobs)
+    // 4. Try Google Drive file links in email body (shared XLSX / PDF files)
     if (!shortlistMatch && userRegNumber) {
-      const attachmentList: any[] = [];
+      try {
+        shortlistMatch = await parseGoogleDriveLink(fullTextContext + " " + rawHtmlText, userRegNumber);
+      } catch (e) {
+        console.warn("[Inbound] Google Drive file parse error:", e);
+      }
+    }
+
+    // 5. Parse attachments (JSON payload attachments, multipart form files, Resend downloads, or blobs)
+    if (!shortlistMatch && userRegNumber) {
+      const attachmentList: any[] = [...formAttachments];
 
       if (Array.isArray(payload.attachments)) {
         attachmentList.push(...payload.attachments);
@@ -336,11 +432,72 @@ export async function POST(req: Request) {
         }
       }
 
+      // If arriving from Resend, query receiving attachments and download actual file buffers
+      if (resendApiKey && email_id) {
+        // If webhook payload had no attachments array, query Resend receiving attachments endpoint
+        if (attachmentList.length === 0) {
+          try {
+            const listRes = await fetch(`https://api.resend.com/emails/receiving/${email_id}/attachments`, {
+              headers: { Authorization: `Bearer ${resendApiKey}` },
+              signal: AbortSignal.timeout(8000),
+            });
+            if (listRes.ok) {
+              const listJson = await listRes.json();
+              const items = Array.isArray(listJson.data) ? listJson.data : (Array.isArray(listJson) ? listJson : []);
+              attachmentList.push(...items);
+            }
+          } catch (listErr) {
+            console.warn("[Inbound] Error listing attachments from Resend:", listErr);
+          }
+        }
+
+        // For each attachment with an ID but without buffer, fetch its download_url and file content
+        await Promise.all(
+          attachmentList.map(async (att) => {
+            if (!att.content && !att.data && !att.bytes && (att.id || att.attachment_id)) {
+              const attId = att.id || att.attachment_id;
+              try {
+                const attRes = await fetch(
+                  `https://api.resend.com/emails/receiving/${email_id}/attachments/${attId}`,
+                  {
+                    headers: { Authorization: `Bearer ${resendApiKey}` },
+                    signal: AbortSignal.timeout(10000),
+                  }
+                );
+                if (attRes.ok) {
+                  const attData = await attRes.json();
+                  const dlUrl = attData.download_url || attData.url;
+                  if (dlUrl) {
+                    const fileRes = await fetch(dlUrl, { signal: AbortSignal.timeout(15000) });
+                    if (fileRes.ok) {
+                      const ab = await fileRes.arrayBuffer();
+                      att.content = Buffer.from(ab);
+                      if (attData.filename && !att.filename) att.filename = attData.filename;
+                      if (attData.content_type && !att.contentType) att.contentType = attData.content_type;
+                    }
+                  }
+                }
+              } catch (dlErr) {
+                console.warn(`[Inbound] Failed fetching attachment buffer for ${attId}:`, dlErr);
+              }
+            }
+          })
+        );
+      }
+
+      if (attachmentList.length > 0) {
+        console.log(`[Inbound Shortlist] Inspecting ${attachmentList.length} attachment(s) for Reg No: ${maskIdentifier(userRegNumber)}`);
+      }
+
       for (const att of attachmentList) {
         try {
-          const match = await processAttachmentItem(att, userRegNumber);
+          const match = await processAttachmentItem(att, userRegNumber, {
+            emailId: email_id,
+            resendApiKey,
+          });
           if (match && match.found) {
             shortlistMatch = match;
+            console.log(`[Inbound Shortlist] Match found in attachment "${att.filename || match.source}" for Reg No: ${maskIdentifier(userRegNumber)}`);
             break;
           }
         } catch (attErr) {

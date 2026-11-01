@@ -118,5 +118,32 @@ describe("API Flow & Webhook Integration Pipeline", () => {
     assert.ok(typeof sampleHealthResponse.uptimeSeconds === "number");
     assert.ok(sampleHealthResponse.services.ai.gemini);
   });
+
+  test("Inbound email webhook pipeline processes binary spreadsheet attachment and matches candidate registration number", async () => {
+    const { processAttachmentItem } = await import("../../lib/attachment-parser");
+    const XLSX = await import("xlsx");
+
+    const sheetData = [
+      ["Roll No", "Student Name", "Status", "Slot"],
+      ["21BCE001", "Student A", "Selected", "10:00 AM"],
+      ["7Y6T8", "Nithin Kumar", "Round 2 Shortlisted", "02:15 PM"],
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    const att = {
+      filename: "Tekion_Round2_Shortlist.xlsx",
+      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      content: buf.toString("base64"),
+    };
+
+    const match = await processAttachmentItem(att, "7Y6T8");
+    assert.ok(match !== null);
+    assert.strictEqual(match.found, true);
+    assert.strictEqual(match.row?.cells["roll no"], "7Y6T8");
+    assert.strictEqual(match.row?.cells["status"], "Round 2 Shortlisted");
+  });
 });
 
