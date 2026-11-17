@@ -19,6 +19,12 @@ import {
   type AttachmentMatchResult,
 } from "@/lib/attachment-parser";
 
+// ── In-Memory Deduplication Cache ────────────────────────────────────────────
+// Stores signatures of recently processed inbound emails (TTL = 2 hours) to block
+// 1-minute retry loops from external scripts or duplicate webhook delivery floods.
+const recentInboundSignatures = new Map<string, number>();
+const INBOUND_DEDUPE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
 function extractCleanEmail(raw: string): string {
   if (!raw) return "";
   const match = raw.match(/<([^>]+)>/);
@@ -327,6 +333,62 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, type: "GMAIL_CONFIRMATION" });
     }
 
+    // ── INBOUND DEDUPLICATION & ANTI-SPAM IDEMPOTENCY GATE ──────────────────
+    // Prevents automated forwarding loops, Google Apps Script 1-minute retry triggers,
+    // and webhook replay floods from spamming the candidate on Telegram.
+    const normalizedSubject = (subject || "").trim().toLowerCase();
+    const cleanBodySnippet = (rawEmailText || fullTextContext || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 300)
+      .toLowerCase();
+
+    // 1. In-memory signature check (0ms overhead)
+    const dedupeKey = `${matchedTgUser.id}:${normalizedSubject}:${cleanBodySnippet.slice(0, 150)}`;
+    const now = Date.now();
+    const lastSeen = recentInboundSignatures.get(dedupeKey);
+    if (lastSeen && now - lastSeen < INBOUND_DEDUPE_TTL_MS) {
+      console.log(`[Inbound Dedupe] Exact duplicate email received in-memory for user ${maskIdentifier(matchedTgUser.id)}. Suppressing duplicate.`);
+      return NextResponse.json({
+        ok: true,
+        status: "already_processed",
+        message: "Duplicate email ignored (in-memory deduplication)",
+      }, { status: 200 });
+    }
+
+    // 2. Database deduplication check (prevents duplicates across serverless cold starts)
+    if (cleanBodySnippet.length > 25) {
+      const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000);
+      const searchChunk = (rawEmailText || fullTextContext).trim().slice(0, 100);
+      try {
+        const existingRecentPosting = await prisma.jobPosting.findFirst({
+          where: {
+            telegramUserId: matchedTgUser.id,
+            createdAt: { gte: oneDayAgo },
+            rawEmailText: {
+              contains: searchChunk,
+            },
+          },
+          select: { id: true, companyName: true, roleTitle: true },
+        });
+
+        if (existingRecentPosting) {
+          recentInboundSignatures.set(dedupeKey, now);
+          console.log(`[Inbound Dedupe] Email already recorded in DB (${existingRecentPosting.id}: ${existingRecentPosting.companyName}) for user ${maskIdentifier(matchedTgUser.id)}. Suppressing duplicate.`);
+          return NextResponse.json({
+            ok: true,
+            status: "already_processed",
+            message: "Duplicate email ignored (already recorded in database)",
+            jobPostingId: existingRecentPosting.id,
+          }, { status: 200 });
+        }
+      } catch (dedupeErr) {
+        console.warn("[Inbound Dedupe] Database lookup error:", dedupeErr);
+      }
+    }
+
+    recentInboundSignatures.set(dedupeKey, now);
+
     // ── ATTACHMENT PARSING + REG NUMBER SHORTLIST DETECTION ──────────────────
     let userRegNumber = "";
     let isAtsEnabled = false;
@@ -613,6 +675,34 @@ export async function POST(req: Request) {
         atsEdgeCaseNotice = `\n\nℹ️ <i>Add a resume to My Space to see inline ATS match scores & gap analysis on new drive alerts.</i>`;
       } else if (atsErr?.message?.includes("limit reached")) {
         atsEdgeCaseNotice = `\n\nℹ️ <i>Daily automated ATS scoring limit reached (10/10 checks today). Use "Check ATS Readiness" inside the app to score this drive manually.</i>`;
+      }
+    }
+
+    // 3. Post-Extraction Company Deduplication Gate
+    // If this is a regular drive announcement (not a shortlist match), verify this user hasn't already received
+    // an alert for this exact company within the last 12 hours.
+    if (!isShortlistFound && companyName && companyName !== "Placement Drive") {
+      try {
+        const existingCompanyDrive = await prisma.jobPosting.findFirst({
+          where: {
+            telegramUserId: matchedTgUser.id,
+            createdAt: { gte: new Date(Date.now() - 12 * 60 * 60 * 1000) },
+            companyName: { equals: companyName, mode: "insensitive" },
+          },
+          select: { id: true, createdAt: true },
+        });
+
+        if (existingCompanyDrive) {
+          console.log(`[Inbound Dedupe] Drive for company "${companyName}" already recorded in DB (${existingCompanyDrive.id}) for user ${maskIdentifier(matchedTgUser.id)}. Suppressing duplicate.`);
+          return NextResponse.json({
+            ok: true,
+            status: "already_processed",
+            message: `Duplicate placement drive for ${companyName} already processed`,
+            jobPostingId: existingCompanyDrive.id,
+          }, { status: 200 });
+        }
+      } catch (compErr) {
+        console.warn("[Inbound Dedupe] Post-extraction company check failed:", compErr);
       }
     }
 

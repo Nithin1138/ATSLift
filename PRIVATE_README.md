@@ -15,7 +15,7 @@
 * **87% Pipeline Latency Reduction (14.2s → 1.8s)**: Parallelized LLM extraction, eligibility verification, and ATS scoring into a 3-way DAG using `Promise.allSettled`, preloaded cached database profiles, and sub-second Groq LPU inference (~350ms).
 * **Instant Shortlist Bypass (<500ms)**: Shortlist and tabular candidate announcements bypass LLM extraction entirely, indexing candidate registration numbers in under 50ms.
 * **Multi-Format Attachment Engine**: High-throughput parsing of `.xlsx`, `.xls`, `.csv`, `.tsv`, `.pdf` stream fallbacks, Google Sheets multi-tab XLSX exports, and Resend inbound attachment stream downloads.
-* **100% Passing Test Suite**: 63 automated unit, integration, and critical path tests across 20 test suites executing in ~600ms via Node's native test runner (`tsx --test`).
+* **100% Passing Test Suite**: 64 automated unit, integration, and critical path tests across 20 test suites executing in ~600ms via Node's native test runner (`tsx --test`).
 
 #### Empirical Latency Matrix Across Operating Conditions
 
@@ -292,7 +292,7 @@ model Transaction {
 
 ## 6. Testing & Quality Engineering Matrix
 
-The project enforces quality with **63 automated tests across 20 suites** using the Node.js native test runner via `tsx`:
+The project enforces quality with **64 automated tests across 20 suites** using the Node.js native test runner via `tsx`:
 
 ```bash
 # Execute entire test suite
@@ -305,12 +305,12 @@ npm run stress:test
 npm run test:email:all
 ```
 
-### Complete Breakdown of the 20 Test Suites (63 Tests Total):
+### Complete Breakdown of the 20 Test Suites (64 Tests Total):
 
 | # | Test Suite | File | Tests | Core Coverage |
 | :-: | :--- | :--- | :-: | :--- |
 | 1 | **Critical Path E2E** | `tests/integration/criticalPath.test.ts` | 4 | Density constraint (Normal $\le$ 135, Concise $\le$ 90 chars), JD gap matching, Idempotent payment webhook, PII masking |
-| 2 | **API Flow & Security** | `tests/integration/apiFlow.test.ts` | 6 | MIME parsing, HMAC verification, API validation schemas, rate limiting, `/api/health`, binary spreadsheet pipeline |
+| 2 | **API Flow & Security** | `tests/integration/apiFlow.test.ts` | 7 | MIME parsing, HMAC verification, API validation schemas, rate limiting, `/api/health`, binary spreadsheet pipeline, Inbound email deduplication & anti-spam gate |
 | 3 | **Attachment & Shortlists** | `tests/unit/attachmentParser.test.ts` | 18 | CSV/XLSX binary buffers, PDF fallbacks, numeric cells, 6 event categories, context templates, title banners, TSV/semicolon delimiters, HTML tables |
 | 4 | **PII Redaction** | `tests/unit/pii.test.ts` | 12 | Email/phone masking, Aadhaar/SSN scrubbing, Bearer tokens, ATS profile anonymization |
 | 5 | **Cover Letter Engine** | `tests/unit/cover-letter.test.ts` | 7 | Duplicate candidate name cleaning, punctuation fixes, case-insensitive duplicate removals |

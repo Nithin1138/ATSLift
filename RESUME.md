@@ -24,7 +24,7 @@ Developed an in-memory shortlist detection engine supporting XLSX, XLS, CSV, TSV
 
 Cut placement pipeline latency ~68% (14.2s → 4.5s at 50 concurrent requests) via 3-way parallel AI processing with Promise.allSettled, Groq inference, and preloaded database profiles, with heuristic fallbacks for AI failures.
 
-Implemented secure payment webhooks with HMAC-SHA256 verification and idempotent reconciliation; added structured logging, PII redaction, health monitoring, rate limiting, and 63 automated tests across 20 suites.
+Implemented secure payment webhooks with HMAC-SHA256 verification and idempotent reconciliation; added structured logging, PII redaction, health monitoring, rate limiting, and 64 automated tests across 20 suites.
 ```
 
 ---
@@ -191,7 +191,7 @@ flowchart TD
 - [x] **Strict TypeScript Typing:** No implicit `any` in core pipelines.
 - [x] **Multi-Format Attachment Parsing:** Robust in-memory ingestion for XLSX, CSV, PDF, and Google Sheets.
 - [x] **Context-Adaptive Notifications:** 6 specialized recruitment templates (OA, GD, Interview, Pool Drive, Walk-in, Offer).
-- [x] **Comprehensive Test Suite:** 63 passing tests across 20 suites verifying critical paths, parsers, and security.
+- [x] **Comprehensive Test Suite:** 64 passing tests across 20 suites verifying critical paths, parsers, and security.
 - [x] **Database Indexing:** Indexed `userId` on `MasterProfile`, `JobPosting`, and `AtsScoreCheck` for sub-10ms queries.
 - [x] **Graceful Error Recovery:** Fallback UI states for missing data, rate limits, and network errors.
 - [x] **Clean Separations of Concerns:** Utility functions (`lib/`), UI Client components (`app/`), and Server API routes (`app/api/`) cleanly decoupled.

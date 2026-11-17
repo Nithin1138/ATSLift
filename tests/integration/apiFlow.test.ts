@@ -145,5 +145,38 @@ describe("API Flow & Webhook Integration Pipeline", () => {
     assert.strictEqual(match.row?.cells["roll no"], "7Y6T8");
     assert.strictEqual(match.row?.cells["status"], "Round 2 Shortlisted");
   });
+
+  test("Inbound email deduplication gate suppresses duplicate email payloads within time window", () => {
+    const dedupeCache = new Map<string, number>();
+    const TTL_MS = 60_000;
+
+    const processEmail = (userId: string, subject: string, bodySnippet: string) => {
+      const normalizedSubject = subject.trim().toLowerCase();
+      const cleanSnippet = bodySnippet.replace(/\s+/g, " ").trim().slice(0, 150).toLowerCase();
+      const key = `${userId}:${normalizedSubject}:${cleanSnippet}`;
+
+      const now = Date.now();
+      const last = dedupeCache.get(key);
+      if (last && now - last < TTL_MS) {
+        return { status: "already_processed", processed: false };
+      }
+      dedupeCache.set(key, now);
+      return { status: "created", processed: true };
+    };
+
+    const first = processEmail("user_123", "Accenture Campus Drive", "Dear Students, Accenture is conducting...");
+    assert.strictEqual(first.status, "created");
+    assert.strictEqual(first.processed, true);
+
+    // Immediate second email (e.g. 1-minute retry or Google Apps Script loop)
+    const duplicate = processEmail("user_123", "Accenture Campus Drive", "Dear Students, Accenture is conducting...");
+    assert.strictEqual(duplicate.status, "already_processed");
+    assert.strictEqual(duplicate.processed, false, "Duplicate email must be suppressed by deduplication gate");
+
+    // Different user with same email should be allowed
+    const diffUser = processEmail("user_456", "Accenture Campus Drive", "Dear Students, Accenture is conducting...");
+    assert.strictEqual(diffUser.status, "created");
+    assert.strictEqual(diffUser.processed, true);
+  });
 });
 
